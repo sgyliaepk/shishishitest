@@ -1,0 +1,2623 @@
+local MARI_ID = 1591715403    
+local SHADOW_ID = 11342345174
+local LOMIC_ID = 365840809
+
+-- Existing bypass users keep their own custom messages.
+local SPECIAL_BYPASS_MESSAGES = {
+    [MARI_ID] = "Hey Mari! Owner bypass loaded.",
+    [SHADOW_ID] = "Hey Shadow! bypass loaded, your welcome.",
+    [LOMIC_ID] = "Hey jayden! bypass loaded, your welcome.",
+}
+
+-- Add new bypass UserIds here. Everyone in this list gets the same message.
+local GROUP_BYPASS_IDS = {
+     8772694362, ---aimlock
+     10096532100, ---xca
+     5138648569, ---taie
+     2512540080, ---art
+     2732818388, ---afusive
+     4546138453, ---toshin
+     9280943257, ---savior
+     1578406998, ---ej
+     2235296290, ---anko 
+     71397980,   ---zybau
+     6115226763, ---diavolo
+     
+     
+}
+
+local GROUP_BYPASS_MESSAGE = "Hey! bypass loaded."
+
+local function isBypassUser(userId)
+    if SPECIAL_BYPASS_MESSAGES[userId] then
+        return true
+    end
+
+    for _, bypassId in ipairs(GROUP_BYPASS_IDS) do
+        if userId == bypassId then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function getBypassMessage(userId)
+    return SPECIAL_BYPASS_MESSAGES[userId] or GROUP_BYPASS_MESSAGE
+end
+
+-------------------------------------------
+----------------MAIN HUB-------------------
+-------------------------------------------
+
+LoadHub = function(usedSavedKey)
+    local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+        local Window = Rayfield:CreateWindow({
+        Name = "MARI-HUB | Gakuran",
+        LoadingTitle = "MARI-HUB",
+        LoadingSubtitle = "by MARI ★",
+        Theme = "Bloom",
+})
+
+
+
+-- ===== SERVICES =====
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local LocalPlayer = Players.LocalPlayer
+local TeleportService = game:GetService("TeleportService")
+
+local WEBHOOK_URL = "https://discord.com/api/webhooks/1530408198492782802/99RTfz69efM0ynXqGhIf8IRx7o9z7TjP4lEJT_WJKPgt7ksRhErC-6FRkwTr5fDWN6uH"
+
+local HttpService = game:GetService("HttpService")
+local Block = require(ReplicatedStorage.CombatSystemClient.Combat.Base.Block)
+
+local AUTO_PARRY_RANGE = 11
+local AUTO_PARRY_LEAD = 0.14
+local AUTO_PARRY_BASE_LEAD = 0.04
+local AUTO_PARRY_PING_MULTIPLIER = 2
+local AUTO_PARRY_MAX_COMPENSATION = 0.25
+local AUTO_PARRY_HOLD = 0.24
+local smoothedPing = 0
+local pingSamplerActive = true
+local autoParryEnabled = false
+local pingCompensationEnabled = false
+local autoParryPulse = 0
+local autoFaceEnabled = false
+local stopAutoFacing = function() end
+
+task.spawn(function()
+    while pingSamplerActive do
+        local success, ping = pcall(function()
+            return LocalPlayer:GetNetworkPing()
+        end)
+
+        if success and typeof(ping) == "number" then
+            if smoothedPing == 0 then
+                smoothedPing = ping
+            else
+                smoothedPing = smoothedPing + (ping - smoothedPing) * 0.25
+            end
+        end
+
+        task.wait(0.5)
+    end
+end)
+
+local function getAutoParryLead()
+    if not pingCompensationEnabled then
+        return AUTO_PARRY_LEAD
+    end
+
+    local compensation = math.clamp(
+        smoothedPing * AUTO_PARRY_PING_MULTIPLIER,
+        0,
+        AUTO_PARRY_MAX_COMPENSATION
+    )
+    return AUTO_PARRY_BASE_LEAD + compensation
+end
+
+-- ===== FLING VARIABLES =====
+local flingActive = false
+local flingPower = 50
+local targetPlayer = nil
+local targetMode = false
+local rejoinCooldown = false
+local namesVisible = false
+local nameTagsActive = true
+local healthBarsVisible = false
+local healthBarsActive = true
+local flingConnection = nil
+local antiFlingEnabled = false
+local antiFlingConnection = nil
+local blinkConnection
+local originalCanCollide = {}
+local connections = {}
+local lastFlingError = 0
+local updatingDropdown = false
+
+-- ===== CONFIG VARIABLES =====
+local autoParryToggle = nil
+local pingCompensationToggle = nil
+local autoFaceToggle = nil
+local healthBarsToggle = nil
+local flingPowerSlider = nil
+local showUsernamesToggle = nil
+local antiFlingToggle = nil
+local antiVoidToggle = nil
+local flyToggle = nil
+local flySpeedSlider = nil
+local noclipToggle = nil
+local shadowStepToggle = nil
+local shadowStepDistSlider = nil
+local configDropdown = nil
+local autoLoadDropdown = nil
+local configNameInput = ""
+local selectedConfig = nil
+local autoLoadSelected = nil
+local heartAutoToggle = nil
+
+
+local flingToggleRef = nil
+local targetStatusLabel = nil
+local targetDropdown = nil
+
+-- ===== FLY VARIABLES =====
+local flying = false
+local flyKeyDown, flyKeyUp
+
+local CONTROL = {F=0,B=0,L=0,R=0,Q=0,E=0}
+local lCONTROL = {F=0,B=0,L=0,R=0,Q=0,E=0}
+local SPEED = 0
+
+local flySpeed = 1
+local QEfly = true
+local flyGyro
+local flyVelocity
+local flyEnabledNoclip = false
+
+-- ===== NOCLIP =====
+local noclipEnabled = false
+local noclipConnection = nil
+
+-- ===== SPECTATE =====
+local spectateTarget = nil
+local spectateConnection = nil
+local spectateRespawnConnection = nil
+local spectateName = ""
+local teleportName = ""
+
+--------shadow step-------
+local blinkOn = false
+local blinkCooldown = false
+local blinkDist = 40
+
+
+-----fly input listeners---
+
+local flyInputBeganConn = UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if not flying then return end
+
+    if input.KeyCode == Enum.KeyCode.W then
+        CONTROL.F = flySpeed
+    elseif input.KeyCode == Enum.KeyCode.S then
+        CONTROL.B = -flySpeed
+    elseif input.KeyCode == Enum.KeyCode.A then
+        CONTROL.L = -flySpeed
+    elseif input.KeyCode == Enum.KeyCode.D then
+        CONTROL.R = flySpeed
+    elseif input.KeyCode == Enum.KeyCode.E and QEfly then
+        CONTROL.Q = flySpeed * 2
+    elseif input.KeyCode == Enum.KeyCode.Q and QEfly then
+        CONTROL.E = -flySpeed * 2
+    end
+end)
+
+local flyInputEndedConn = UserInputService.InputEnded:Connect(function(input)
+    if not flying then return end
+
+    if input.KeyCode == Enum.KeyCode.W then
+        CONTROL.F = 0
+    elseif input.KeyCode == Enum.KeyCode.S then
+        CONTROL.B = 0
+    elseif input.KeyCode == Enum.KeyCode.A then
+        CONTROL.L = 0
+    elseif input.KeyCode == Enum.KeyCode.D then
+        CONTROL.R = 0
+    elseif input.KeyCode == Enum.KeyCode.E then
+        CONTROL.Q = 0
+    elseif input.KeyCode == Enum.KeyCode.Q then
+        CONTROL.E = 0
+    end
+end)
+table.insert(connections, flyInputBeganConn)
+table.insert(connections, flyInputEndedConn)
+
+-- ===== SOUND =====
+local sound = Instance.new("Sound")
+sound.SoundId = "rbxassetid://942127495"
+sound.Volume = 0.1
+sound.Parent = workspace
+
+-- ===== UTILITY =====
+local function playSound()
+    pcall(function() sound:Play() end)
+end
+
+local function createNotification(title, text)
+    Rayfield:Notify({
+        Title = title,
+        Content = text,
+        Duration = 3,
+    })
+end
+
+local function sendExecutionLog()
+    if WEBHOOK_URL == "" then
+        return
+    end
+
+    local data = {
+        username = "Misaki",
+        content = string.format(
+            "🚀 MARI-HUB Executed\n" ..
+            "👤 Player: %s (%d)\n" ..
+            "🆔 PlaceId: %d\n" ..
+            "🌐 JobId: %s\n" ..
+            "🕒 Time: %s",
+            LocalPlayer.Name,
+            LocalPlayer.UserId,
+            game.PlaceId,
+            game.JobId,
+            os.date("%Y-%m-%d %H:%M:%S")
+        )
+    }
+
+    local request =
+    http_request or
+    request or
+    (syn and syn.request) or
+    (http and http.request)
+
+    if request then
+        pcall(function()
+            request({
+                Url = WEBHOOK_URL,
+                Method = "POST",
+                Headers = {
+                    ["Content-Type"] = "application/json"
+                },
+                Body = HttpService:JSONEncode(data)
+            })
+        end)
+    end
+end
+
+-- ===== TARGET FUNCTIONS =====
+local function updateTargetStatusLabel()
+    if not targetStatusLabel then
+        return
+    end
+
+    local statusText = "OFF"
+
+    if targetMode and targetPlayer then
+        if targetPlayer.Parent == Players then
+            statusText = "ON (Locked: " .. targetPlayer.Name .. ")"
+        else
+            targetPlayer = nil
+            targetMode = false
+        end
+    end
+
+    targetStatusLabel:Set("Target Mode: " .. statusText)
+end
+
+-- Returns TRUE if target was set, FALSE if failed
+local function setTarget(player)
+
+
+    if player then
+        if not flingActive then
+            targetPlayer = nil
+            targetMode = false
+            createNotification("Error", "Enable fling first!")
+            updateTargetStatusLabel()
+            return false
+        end
+
+        targetPlayer = player
+        targetMode = true
+        createNotification("Target Locked", player.Name)
+        updateTargetStatusLabel()
+        return true
+    else
+    local wasTargetMode = targetMode
+
+    targetPlayer = nil
+    targetMode = false
+
+    createNotification("Target", "Target cleared")
+
+    if wasTargetMode then
+        createNotification("Target Mode", "OFF")
+    end
+
+    updateTargetStatusLabel()
+    return true
+  end
+end
+
+-- ===== FLING LOGIC =====
+local flingPartsByChar = {}
+local flingCharConnections = {}
+local flingCollisionState = {}
+
+local function onFlingPartAdded(char, desc)
+    if desc:IsA("BasePart") then
+        local list = flingPartsByChar[char]
+        if list then
+            table.insert(list, desc)
+        end
+    end
+end
+
+local function wireFlingCharacter(char)
+    if flingPartsByChar[char] then
+        return
+    end
+
+    local list = {}
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            table.insert(list, part)
+        end
+    end
+    flingPartsByChar[char] = list
+
+    table.insert(flingCharConnections, char.DescendantAdded:Connect(function(desc)
+        onFlingPartAdded(char, desc)
+    end))
+    table.insert(flingCharConnections, char.DescendantRemoving:Connect(function(desc)
+        local l = flingPartsByChar[char]
+        if l and desc:IsA("BasePart") then
+            for i = #l, 1, -1 do
+                if l[i] == desc then
+                    table.remove(l, i)
+                end
+            end
+        end
+    end))
+end
+
+local function clearFlingWiring()
+    for _, conn in ipairs(flingCharConnections) do
+        pcall(function()
+            conn:Disconnect()
+        end)
+    end
+    table.clear(flingCharConnections)
+    table.clear(flingPartsByChar)
+end
+
+local function setPartGhosted(part)
+    if flingCollisionState[part] == nil then
+        flingCollisionState[part] = part.CanCollide
+    end
+    part.CanCollide = false
+end
+
+local function restoreGhostedParts()
+    for part, state in pairs(flingCollisionState) do
+        if part and part.Parent then
+            part.CanCollide = state
+        end
+    end
+    table.clear(flingCollisionState)
+end
+
+local function zeroCharacterVelocity(char)
+    if not char then
+        return
+    end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.Velocity = Vector3.zero
+            pcall(function()
+                part.AssemblyLinearVelocity = Vector3.zero
+            end)
+        end
+    end
+end
+
+local function stopFlingLoop()
+    flingActive = false
+    if flingConnection then
+        flingConnection:Disconnect()
+        flingConnection = nil
+    end
+    clearFlingWiring()
+    updateTargetStatusLabel()
+end
+
+local function stopFlingOnDeath()
+    if not flingActive then
+        return
+    end
+
+    stopFlingLoop()
+    pcall(restoreGhostedParts)
+    pcall(zeroCharacterVelocity, LocalPlayer.Character)
+end
+
+local startFlingMonitor
+
+local function startFlingLoop()
+    if not flingActive or flingConnection then
+        return
+    end
+    flingConnection = RunService.PostSimulation:Connect(function()
+        if not flingActive then return end
+        if not LocalPlayer.Character then return end
+        local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                wireFlingCharacter(p.Character)
+            end
+        end
+
+        for _, parts in pairs(flingPartsByChar) do
+            for _, part in ipairs(parts) do
+                if part and part.Parent and part.CanCollide then
+                    setPartGhosted(part)
+                end
+            end
+        end
+
+        local shouldFling = false
+        if targetMode and targetPlayer then
+            if targetPlayer.Character then
+                local tHrp = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+                if tHrp then
+                    local dist = (hrp.Position - tHrp.Position).Magnitude
+                    if dist <= 20 then shouldFling = true end
+                end
+            end
+        else
+            for _, p in pairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer and p.Character then
+                    local tHrp = p.Character:FindFirstChild("HumanoidRootPart")
+                    if tHrp then
+                        local dist = (hrp.Position - tHrp.Position).Magnitude
+                        if dist <= 20 then
+                            shouldFling = true
+                            break
+                        end
+                    end
+                end
+            end
+        end
+
+        if shouldFling then
+            local playerGhosted = {}
+            for _, v in pairs(LocalPlayer.Character:GetDescendants()) do
+                if v:IsA("BasePart") and v.CanCollide then
+                    setPartGhosted(v)
+                    table.insert(playerGhosted, v)
+                end
+            end
+            local strength = flingPower * 100
+            local oldV = hrp.Velocity
+            local newV = Vector3.new(strength, strength, strength)
+            pcall(function()
+                hrp.Velocity = newV
+                hrp.AssemblyLinearVelocity = newV
+            end)
+            pcall(function()
+                RunService.RenderStepped:Wait()
+            end)
+            pcall(function()
+                hrp.Velocity = oldV
+                hrp.AssemblyLinearVelocity = oldV
+            end)
+            for _, part in ipairs(playerGhosted) do
+                if part and part.Parent then
+                    part.CanCollide = true
+                end
+                flingCollisionState[part] = nil
+            end
+        end
+    end)
+    startFlingMonitor()
+end
+
+local function wireFlingDeath()
+    local function wireChar(char)
+        local hum = char:WaitForChild("Humanoid", 10)
+        if hum then
+            table.insert(connections, hum.Died:Connect(stopFlingOnDeath))
+        end
+    end
+
+    local char = LocalPlayer.Character
+    if char then
+        task.spawn(wireChar, char)
+    end
+
+    table.insert(connections, LocalPlayer.CharacterAdded:Connect(function(char)
+        task.spawn(wireChar, char)
+        if flingActive then
+            startFlingMonitor()
+        end
+    end))
+end
+
+wireFlingDeath()
+
+local flingMonitorConn = nil
+local flingDeathActive = false
+local deathChar = nil
+local flingWasActive = false
+
+local function stopFlingMonitor()
+    if flingMonitorConn then
+        flingMonitorConn:Disconnect()
+        flingMonitorConn = nil
+    end
+    flingDeathActive = false
+    deathChar = nil
+    flingWasActive = false
+end
+
+startFlingMonitor = function()
+    if flingMonitorConn then
+        return
+    end
+    flingMonitorConn = RunService.Heartbeat:Connect(function()
+        if not flingActive and not flingWasActive then
+            return
+        end
+        local char = LocalPlayer.Character
+        if not char then
+            stopFlingMonitor()
+            return
+        end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        local dead = hum and hum.Health <= 0
+
+        if dead then
+            if not flingDeathActive then
+                flingDeathActive = true
+                deathChar = char
+                if flingActive then
+                    flingWasActive = true
+                    stopFlingOnDeath()
+                end
+            end
+        else
+            if flingDeathActive then
+                flingDeathActive = false
+                if deathChar == char and flingWasActive then
+                    flingWasActive = false
+                    flingActive = true
+                    startFlingLoop()
+                else
+                    flingWasActive = false
+                end
+                deathChar = nil
+            end
+        end
+    end)
+end
+
+local function toggleFling(newState)
+    if newState == nil then
+        flingActive = not flingActive
+    else
+        flingActive = newState
+    end
+
+    playSound()
+
+    if flingToggleRef then
+        flingToggleRef:Set(flingActive)
+    end
+
+    updateTargetStatusLabel()
+
+    if flingActive then
+        startFlingLoop()
+    else
+        stopFlingLoop()
+        stopFlingMonitor()
+        restoreGhostedParts()
+        zeroCharacterVelocity(LocalPlayer.Character)
+        task.delay(0.1, function()
+            if not flingActive then
+                zeroCharacterVelocity(LocalPlayer.Character)
+            end
+        end)
+    end
+end
+
+-- ===== USERNAME TAGS =====
+local function createNameTag(plr)
+    if plr == LocalPlayer then return end
+
+    local function setup(character)
+        local head = character:FindFirstChild("Head") or character:WaitForChild("Head", 10)
+        if not nameTagsActive or not head then return end
+
+        local old = head:FindFirstChild("MariNameTag")
+        if old then old:Destroy() end
+
+        local gui = Instance.new("BillboardGui")
+        gui.Name = "MariNameTag"
+        gui.Adornee = head
+        gui.Size = UDim2.fromOffset(220, 40)
+        gui.StudsOffset = Vector3.new(0, 3.35, 0)
+        gui.MaxDistance = 500
+        gui.Enabled = namesVisible
+        gui.Parent = head
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.fromScale(1, 1)
+        label.BackgroundTransparency = 1
+        label.Text = plr.Name
+        label.TextColor3 = Color3.new(1,1,1)
+        label.TextStrokeTransparency = 0
+        label.TextStrokeColor3 = Color3.new(0,0,0)
+        label.Font = Enum.Font.GothamBold
+        label.TextSize = 18
+        label.Parent = gui
+    end
+
+    if plr.Character then
+        task.spawn(setup, plr.Character)
+    end
+    table.insert(connections, plr.CharacterAdded:Connect(function(character)
+        task.spawn(setup, character)
+    end))
+end
+
+local function setNameTagsVisible(state)
+    namesVisible = state
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            local head = plr.Character:FindFirstChild("Head")
+            if head then
+                local tag = head:FindFirstChild("MariNameTag")
+                if tag and tag:IsA("BillboardGui") then
+                    tag.Enabled = namesVisible
+                end
+            end
+        end
+    end
+    createNotification("Usernames", state and "Enabled" or "Disabled")
+end
+
+-- ===== HEALTH BARS =====
+local function createHealthBar(plr)
+    if plr == LocalPlayer then return end
+
+    local function setup(character)
+        local head = character:FindFirstChild("Head") or character:WaitForChild("Head", 10)
+        local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 10)
+        if not healthBarsActive or not head or not humanoid then return end
+
+        local old = head:FindFirstChild("MariHealthBar")
+        if old then old:Destroy() end
+
+        local gui = Instance.new("BillboardGui")
+        gui.Name = "MariHealthBar"
+        gui.Adornee = head
+        gui.Size = UDim2.fromOffset(92, 12)
+        gui.StudsOffset = Vector3.new(0, 2.8, 0)
+        gui.MaxDistance = 100
+        gui.AlwaysOnTop = false
+        gui.Enabled = healthBarsVisible
+        gui.Parent = head
+
+        local background = Instance.new("Frame")
+        background.Size = UDim2.fromScale(1, 1)
+        background.BackgroundColor3 = Color3.fromRGB(16, 18, 22)
+        background.BackgroundTransparency = 0.12
+        background.BorderSizePixel = 0
+        background.Parent = gui
+
+        local backgroundCorner = Instance.new("UICorner")
+        backgroundCorner.CornerRadius = UDim.new(0, 4)
+        backgroundCorner.Parent = background
+
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = Color3.fromRGB(235, 238, 245)
+        stroke.Transparency = 0.72
+        stroke.Thickness = 1
+        stroke.Parent = background
+
+        local track = Instance.new("Frame")
+        track.Position = UDim2.fromOffset(2, 2)
+        track.Size = UDim2.new(1, -4, 1, -4)
+        track.BackgroundColor3 = Color3.fromRGB(39, 42, 49)
+        track.BorderSizePixel = 0
+        track.ClipsDescendants = true
+        track.Parent = background
+
+        local trackCorner = Instance.new("UICorner")
+        trackCorner.CornerRadius = UDim.new(0, 2)
+        trackCorner.Parent = track
+
+        local fill = Instance.new("Frame")
+        fill.Size = UDim2.fromScale(1, 1)
+        fill.BackgroundColor3 = Color3.fromRGB(65, 220, 120)
+        fill.BorderSizePixel = 0
+        fill.Parent = track
+
+        local fillCorner = Instance.new("UICorner")
+        fillCorner.CornerRadius = UDim.new(0, 2)
+        fillCorner.Parent = fill
+
+        local function updateHealth()
+            if not gui.Parent then return end
+
+            local ratio = math.clamp(humanoid.Health / math.max(humanoid.MaxHealth, 1), 0, 1)
+            fill.Size = UDim2.fromScale(ratio, 1)
+            fill.BackgroundColor3 = Color3.fromHSV(ratio * 0.32, 0.78, 0.92)
+            gui.Enabled = healthBarsVisible and humanoid.Health > 0
+        end
+
+        updateHealth()
+        table.insert(connections, humanoid.HealthChanged:Connect(updateHealth))
+        table.insert(connections, humanoid:GetPropertyChangedSignal("MaxHealth"):Connect(updateHealth))
+    end
+
+    if plr.Character then
+        task.spawn(setup, plr.Character)
+    end
+    table.insert(connections, plr.CharacterAdded:Connect(function(character)
+        task.spawn(setup, character)
+    end))
+end
+
+local function setHealthBarsVisible(state)
+    healthBarsVisible = state
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Character then
+            local head = plr.Character:FindFirstChild("Head")
+            local humanoid = plr.Character:FindFirstChildOfClass("Humanoid")
+            local gui = head and head:FindFirstChild("MariHealthBar")
+            if gui and gui:IsA("BillboardGui") then
+                gui.Enabled = state and humanoid ~= nil and humanoid.Health > 0
+            end
+        end
+    end
+end
+
+-- ===== ANTI FLING =====
+local antiFlingPartsByChar = {}
+local antiFlingCharConnections = {}
+
+local function onAntiFlingPartAdded(char, desc)
+    if desc:IsA("BasePart") then
+        if originalCanCollide[desc] == nil then
+            originalCanCollide[desc] = desc.CanCollide
+        end
+        local list = antiFlingPartsByChar[char]
+        if list then
+            table.insert(list, desc)
+        end
+    end
+end
+
+local function wireAntiFlingCharacter(char)
+    if antiFlingPartsByChar[char] then
+        return
+    end
+
+    local list = {}
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            if originalCanCollide[part] == nil then
+                originalCanCollide[part] = part.CanCollide
+            end
+            table.insert(list, part)
+        end
+    end
+    antiFlingPartsByChar[char] = list
+
+    table.insert(antiFlingCharConnections, char.DescendantAdded:Connect(function(desc)
+        onAntiFlingPartAdded(char, desc)
+    end))
+    table.insert(antiFlingCharConnections, char.DescendantRemoving:Connect(function(desc)
+        local l = antiFlingPartsByChar[char]
+        if l and desc:IsA("BasePart") then
+            for i = #l, 1, -1 do
+                if l[i] == desc then
+                    table.remove(l, i)
+                end
+            end
+        end
+    end))
+end
+
+local function wireAntiFlingPlayer(player)
+    if player == LocalPlayer then
+        return
+    end
+    if player.Character then
+        wireAntiFlingCharacter(player.Character)
+    end
+    table.insert(antiFlingCharConnections, player.CharacterAdded:Connect(wireAntiFlingCharacter))
+end
+
+local function clearAntiFlingWiring()
+    for _, conn in ipairs(antiFlingCharConnections) do
+        pcall(function()
+            conn:Disconnect()
+        end)
+    end
+    table.clear(antiFlingCharConnections)
+    table.clear(antiFlingPartsByChar)
+end
+
+local function toggleAntiFling(state)
+    if antiFlingConnection then
+        antiFlingConnection:Disconnect()
+        antiFlingConnection = nil
+    end
+
+    antiFlingEnabled = state
+
+    if not state then
+        for part, value in pairs(originalCanCollide) do
+            if part and part.Parent then
+                part.CanCollide = value
+            end
+        end
+
+        table.clear(originalCanCollide)
+        clearAntiFlingWiring()
+
+        createNotification("Anti Fling", "Disabled")
+        return
+    end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        wireAntiFlingPlayer(player)
+    end
+
+    table.insert(antiFlingCharConnections, Players.PlayerAdded:Connect(wireAntiFlingPlayer))
+
+    antiFlingConnection = RunService.Stepped:Connect(function()
+        for _, parts in pairs(antiFlingPartsByChar) do
+            for _, part in ipairs(parts) do
+                if part and part.Parent and part.CanCollide then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end)
+
+    createNotification("Anti Fling", "Enabled")
+end
+
+-- ===== ANTI VOID =====
+local antiVoidEnabled = false
+local originalFallenPartsDestroyHeight = workspace.FallenPartsDestroyHeight
+
+local function toggleAntiVoid(state)
+    antiVoidEnabled = state
+
+    if state then
+        workspace.FallenPartsDestroyHeight = 0/0
+        createNotification("Anti Void", "Enabled")
+    else
+        workspace.FallenPartsDestroyHeight = originalFallenPartsDestroyHeight
+        createNotification("Anti Void", "Disabled")
+    end
+end
+
+-- ===== NOCLIP =====
+local function toggleNoclip(state, silent)
+    noclipEnabled = state
+
+    if noclipConnection then
+        noclipConnection:Disconnect()
+        noclipConnection = nil
+    end
+
+    if not state then
+        -- Restore collisions
+        local character = LocalPlayer.Character
+        if character then
+            for _, part in ipairs(character:GetDescendants()) do
+                if part:IsA("BasePart") then
+                    part.CanCollide = true
+                end
+            end
+        end
+
+        if not silent then
+    createNotification("Noclip", "Disabled")
+end
+        return
+    end
+
+    noclipConnection = RunService.Stepped:Connect(function()
+        local character = LocalPlayer.Character
+        if not character then return end
+
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+    end)
+
+    if not silent then
+    createNotification("Noclip", "Enabled")
+end
+end
+
+-- ======FLY=========
+local function StartFly()
+  if flying then return end -- Prevent multiple fly loops
+flying = true
+if not noclipEnabled then
+    flyEnabledNoclip = true
+    toggleNoclip(true, true)
+else
+    flyEnabledNoclip = false
+end
+		local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+        local Humanoid = Character:WaitForChild("Humanoid")
+        local Root = Character:WaitForChild("HumanoidRootPart")
+        flyGyro = Instance.new("BodyGyro")
+        flyVelocity = Instance.new("BodyVelocity")
+        flyGyro.P = 9e4
+		flyGyro.Parent = Root
+		flyVelocity.Parent = Root
+		flyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+		flyGyro.CFrame = Root.CFrame
+		flyVelocity.Velocity = Vector3.new(0, 0, 0)
+		flyVelocity.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        task.spawn(function()
+          while flying do
+        task.wait()
+			
+
+    if not flying or not flyVelocity or not flyGyro then
+        break
+    end
+
+    local camera = workspace.CurrentCamera
+				
+				
+
+				if CONTROL.L + CONTROL.R ~= 0 or CONTROL.F + CONTROL.B ~= 0 or CONTROL.Q + CONTROL.E ~= 0 then
+					SPEED = 50
+				elseif not (CONTROL.L + CONTROL.R ~= 0 or CONTROL.F + CONTROL.B ~= 0 or CONTROL.Q + CONTROL.E ~= 0) and SPEED ~= 0 then
+					SPEED = 0
+				end
+                
+				if (CONTROL.L + CONTROL.R) ~= 0 or (CONTROL.F + CONTROL.B) ~= 0 or (CONTROL.Q + CONTROL.E) ~= 0 then
+					flyVelocity.Velocity = ((camera.CFrame.LookVector * (CONTROL.F + CONTROL.B)) + ((camera.CFrame * CFrame.new(CONTROL.L + CONTROL.R, (CONTROL.F + CONTROL.B + CONTROL.Q + CONTROL.E) * 0.2, 0).p) - camera.CFrame.p)) * SPEED
+					lCONTROL = {F = CONTROL.F, B = CONTROL.B, L = CONTROL.L, R = CONTROL.R}
+				elseif (CONTROL.L + CONTROL.R) == 0 and (CONTROL.F + CONTROL.B) == 0 and (CONTROL.Q + CONTROL.E) == 0 and SPEED ~= 0 then
+					flyVelocity.Velocity = ((camera.CFrame.LookVector * (lCONTROL.F + lCONTROL.B)) + ((camera.CFrame * CFrame.new(lCONTROL.L + lCONTROL.R, (lCONTROL.F + lCONTROL.B + CONTROL.Q + CONTROL.E) * 0.2, 0).p) - camera.CFrame.p)) * SPEED
+				else
+					flyVelocity.Velocity = Vector3.new(0, 0, 0)
+				end
+				flyGyro.CFrame = camera.CFrame
+			end
+			CONTROL = {F = 0, B = 0, L = 0, R = 0, Q = 0, E = 0}
+			lCONTROL = {F = 0, B = 0, L = 0, R = 0, Q = 0, E = 0}
+			SPEED = 0
+
+            
+            
+    
+    
+
+			if Humanoid then Humanoid.PlatformStand = false end
+		end)
+        
+	end
+
+	
+
+
+local function StopFly()
+    flying = false
+    
+
+
+    if flyGyro then
+        flyGyro:Destroy()
+        flyGyro = nil
+    end
+
+    if flyVelocity then
+        flyVelocity:Destroy()
+        flyVelocity = nil
+    end
+
+    CONTROL = {F=0,B=0,L=0,R=0,Q=0,E=0}
+    lCONTROL = {F=0,B=0,L=0,R=0,Q=0,E=0}
+    SPEED = 0
+
+    local hum = Players.LocalPlayer.Character and Players.LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.PlatformStand = false
+    end
+
+    workspace.CurrentCamera.CameraType = Enum.CameraType.Custom
+    if flyEnabledNoclip then
+    toggleNoclip(false, true)
+    flyEnabledNoclip = false
+end
+end
+
+
+-- ===== SPECTATE =====
+local function stopSpectating()
+    if spectateConnection then
+        spectateConnection:Disconnect()
+        spectateConnection = nil
+    end
+
+    if spectateRespawnConnection then
+        spectateRespawnConnection:Disconnect()
+        spectateRespawnConnection = nil
+    end
+
+    spectateTarget = nil
+
+    local character = LocalPlayer.Character
+    if character then
+        local hum = character:FindFirstChildOfClass("Humanoid")
+        if hum then
+            workspace.CurrentCamera.CameraSubject = hum
+        end
+    end
+
+    createNotification("Spectate", "Stopped spectating.")
+end
+
+local function startSpectating(playerName)
+    if playerName == "" then
+        createNotification("Error", "Enter a player name.")
+        return
+    end
+
+    local target
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Name:lower():sub(1,#playerName) == playerName:lower() then
+            target = plr
+            break
+        end
+    end
+
+    if not target then
+        createNotification("Error", "Player not found.")
+        return
+    end
+
+    stopSpectating()
+
+    spectateTarget = target
+
+    local function updateCamera()
+        if not spectateTarget then
+            return
+        end
+
+        local char = spectateTarget.Character
+        if not char then
+            return
+        end
+
+        local hum = char:FindFirstChildOfClass("Humanoid")
+
+        if hum then
+            workspace.CurrentCamera.CameraSubject = hum
+        end
+    end
+
+    updateCamera()
+
+    spectateRespawnConnection = target.CharacterAdded:Connect(function()
+        task.wait(0.2)
+        updateCamera()
+    end)
+
+    spectateConnection = workspace.CurrentCamera:GetPropertyChangedSignal("CameraSubject"):Connect(function()
+        updateCamera()
+    end)
+
+    createNotification("Spectate", "Viewing "..target.Name)
+end
+
+-- ===== TELEPORT TO PLAYER =====
+local function teleportToPlayer(playerName)
+    if playerName == "" then
+        createNotification("Error", "Enter a player name.")
+        return
+    end
+
+    local target
+
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer and plr.Name:lower():sub(1, #playerName) == playerName:lower() then
+            target = plr
+            break
+        end
+    end
+
+    if not target then
+        createNotification("Error", "Player not found.")
+        return
+    end
+
+    local myCharacter = LocalPlayer.Character
+    local targetCharacter = target.Character
+
+    if not myCharacter or not targetCharacter then
+        createNotification("Error", "Character unavailable.")
+        return
+    end
+
+    local myRoot = myCharacter:FindFirstChild("HumanoidRootPart")
+    local targetRoot = targetCharacter:FindFirstChild("HumanoidRootPart")
+
+    if not myRoot or not targetRoot then
+        createNotification("Error", "HumanoidRootPart missing.")
+        return
+    end
+
+    -- Teleport slightly behind the player
+    myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, 0, -3)
+
+    createNotification("Teleported", "Teleported to "..target.Name)
+end
+
+---shadow step logic----
+local function doBlink()
+    if not blinkOn or blinkCooldown then return end
+
+    local character = LocalPlayer.Character
+if not character then return end
+
+local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    local cam = workspace.CurrentCamera
+    local look = cam.CFrame.LookVector
+    local dashDir = Vector3.new(look.X, 0, look.Z)
+
+    if dashDir.Magnitude > 0 then
+        dashDir = dashDir.Unit
+    end
+
+    hrp.CFrame = hrp.CFrame + dashDir * blinkDist
+
+    task.spawn(function()
+        local ch = LocalPlayer.Character
+        if not ch then return end
+
+        for _, part in ipairs(ch:GetDescendants()) do
+            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+                local original = part.Material
+                part.Material = Enum.Material.Neon
+
+                task.delay(0.12, function()
+                    if part and part.Parent then
+                        part.Material = original
+                    end
+                end)
+            end
+        end
+    end)
+
+    blinkCooldown = true
+    task.delay(0.2, function()
+        blinkCooldown = false
+    end)
+end
+
+-- ===== REJOIN =====
+local function rejoinServer()
+    if rejoinCooldown then
+        createNotification("Cooldown", "Wait a few seconds")
+        return
+    end
+    rejoinCooldown = true
+    stopFlingLoop()
+    stopFlingMonitor()
+    restoreGhostedParts()
+    createNotification("Rejoining", "Teleporting...")
+    pcall(function()
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+    end)
+    task.delay(10, function() rejoinCooldown = false end)
+end
+
+-- ===== INIT PLAYER OVERLAYS =====
+for _, plr in pairs(Players:GetPlayers()) do
+    createNameTag(plr)
+    createHealthBar(plr)
+end
+table.insert(connections, Players.PlayerAdded:Connect(createNameTag))
+table.insert(connections, Players.PlayerAdded:Connect(createHealthBar))
+
+-- ===== CONFIG SYSTEM =====
+local CONFIG_FOLDER = "MARI_HUB_CONFIGS/"
+local CONFIG_AUTOLOAD_FILE = "MARI_HUB_AUTOLOAD.txt"
+
+local keybindRegistry = {}
+
+local function ensureConfigFolder()
+    if makefolder then
+        pcall(function()
+            makefolder(CONFIG_FOLDER)
+        end)
+    end
+end
+
+local function sanitizeConfigName(name)
+    return tostring(name or ""):gsub("[^%w %-]", ""):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function getConfigPath(name)
+    return CONFIG_FOLDER .. name .. ".json"
+end
+
+local function listConfigs()
+    local names = {}
+    if listfiles then
+        local success, files = pcall(function()
+            return listfiles(CONFIG_FOLDER)
+        end)
+        if success then
+            for _, file in ipairs(files) do
+                local fileName = file:gsub("^.*[\\/]", "")
+                local name = fileName:gsub("%.json$", "")
+                if name ~= "" and fileName ~= name then
+                    table.insert(names, name)
+                end
+            end
+        end
+    end
+    table.sort(names)
+    return names
+end
+
+local function refreshConfigDropdowns()
+    local configs = listConfigs()
+    if configDropdown then
+        pcall(function()
+            configDropdown:Refresh(configs, true)
+        end)
+    end
+    if autoLoadDropdown then
+        pcall(function()
+            autoLoadDropdown:Refresh(configs, true)
+        end)
+    end
+end
+
+local function collectSettings()
+    local settings = {
+        autoParryEnabled = autoParryEnabled,
+        pingCompensationEnabled = pingCompensationEnabled,
+        autoFaceEnabled = autoFaceEnabled,
+        healthBarsVisible = healthBarsVisible,
+        flingActive = flingActive,
+        flingPower = flingPower,
+        namesVisible = namesVisible,
+        antiFlingEnabled = antiFlingEnabled,
+        antiVoidEnabled = antiVoidEnabled,
+        flying = flying,
+        flySpeed = flySpeed,
+        noclipEnabled = noclipEnabled,
+        blinkOn = blinkOn,
+        blinkDist = blinkDist,
+        heartAutoEnabled = _G.__heartAuto == true,
+    }
+    for name, entry in pairs(keybindRegistry) do
+        settings[name] = entry.key
+    end
+    return settings
+end
+
+local function saveConfig(name)
+    local cleanName = sanitizeConfigName(name)
+    if cleanName == "" then
+        createNotification("Config", "Enter a config name first!")
+        return false
+    end
+
+    ensureConfigFolder()
+
+    local success, encoded = pcall(function()
+        return HttpService:JSONEncode(collectSettings())
+    end)
+    if not success then
+        createNotification("Config", "Failed to save config.")
+        return false
+    end
+
+    local ok = pcall(function()
+        writefile(getConfigPath(cleanName), encoded)
+    end)
+    if ok then
+        createNotification("Config", "Saved: " .. cleanName)
+        refreshConfigDropdowns()
+        return true
+    end
+
+    createNotification("Config", "Failed to save config.")
+    return false
+end
+
+local function deleteConfig(name)
+    local cleanName = sanitizeConfigName(name)
+    if cleanName == "" then
+        createNotification("Config", "Select a config first!")
+        return false
+    end
+
+    if not delfile or not isfile then
+        createNotification("Config", "File IO unavailable!")
+        return false
+    end
+
+    local path = getConfigPath(cleanName)
+    if not isfile(path) then
+        createNotification("Config", "Config not found: " .. cleanName)
+        refreshConfigDropdowns()
+        return false
+    end
+
+    local ok = pcall(function()
+        delfile(path)
+    end)
+    if ok then
+        createNotification("Config", "Deleted: " .. cleanName)
+        refreshConfigDropdowns()
+        return true
+    end
+
+    createNotification("Config", "Failed to delete config.")
+    return false
+end
+
+local function setToggleIfChanged(tg, value)
+    if tg and tg.CurrentValue ~= value then
+        tg:Set(value)
+    end
+end
+
+local function setKeybindIfChanged(entry, value)
+    if entry and entry.keybind and entry.keybind.CurrentKeybind ~= value then
+        entry.keybind:Set(value)
+    end
+end
+
+local function applySettings(settings)
+    if type(settings) ~= "table" then
+        return
+    end
+
+    setToggleIfChanged(autoParryToggle, settings.autoParryEnabled == true)
+    setToggleIfChanged(pingCompensationToggle, settings.pingCompensationEnabled == true)
+    setToggleIfChanged(autoFaceToggle, settings.autoFaceEnabled == true)
+    setToggleIfChanged(healthBarsToggle, settings.healthBarsVisible == true)
+    setToggleIfChanged(flingToggleRef, settings.flingActive == true)
+    setToggleIfChanged(flingPowerSlider, settings.flingPower or flingPower)
+    setToggleIfChanged(showUsernamesToggle, settings.namesVisible == true)
+    setToggleIfChanged(antiFlingToggle, settings.antiFlingEnabled == true)
+    setToggleIfChanged(antiVoidToggle, settings.antiVoidEnabled == true)
+    setToggleIfChanged(flyToggle, settings.flying == true)
+    setToggleIfChanged(flySpeedSlider, settings.flySpeed or flySpeed)
+    setToggleIfChanged(noclipToggle, settings.noclipEnabled == true)
+    setToggleIfChanged(shadowStepToggle, settings.blinkOn == true)
+    setToggleIfChanged(shadowStepDistSlider, settings.blinkDist or blinkDist)
+    setToggleIfChanged(heartAutoToggle, settings.heartAutoEnabled == true)
+
+    for name, entry in pairs(keybindRegistry) do
+        local value = settings[name]
+        if type(value) == "string" then
+            setKeybindIfChanged(entry, value)
+        end
+    end
+end
+
+local function loadConfig(name)
+    local cleanName = sanitizeConfigName(name)
+    if cleanName == "" then
+        createNotification("Config", "Select a config first!")
+        return false
+    end
+
+    if not isfile or not readfile then
+        createNotification("Config", "File IO unavailable!")
+        return false
+    end
+
+    local path = getConfigPath(cleanName)
+    if not isfile(path) then
+        createNotification("Config", "Config not found: " .. cleanName)
+        refreshConfigDropdowns()
+        return false
+    end
+
+    local success, content = pcall(function()
+        return readfile(path)
+    end)
+    if not success then
+        createNotification("Config", "Failed to read config.")
+        return false
+    end
+
+    local ok, settings = pcall(function()
+        return HttpService:JSONDecode(content)
+    end)
+    if not ok or type(settings) ~= "table" then
+        createNotification("Config", "Config is corrupted.")
+        return false
+    end
+
+    pcall(applySettings, settings)
+    createNotification("Config", "Loaded config: " .. (cleanName ~= "" and cleanName or "n/a"))
+    return true
+end
+
+local function getAutoLoadName()
+    if not isfile or not readfile then
+        return nil
+    end
+    if not isfile(CONFIG_AUTOLOAD_FILE) then
+        return nil
+    end
+
+    local success, content = pcall(function()
+        return readfile(CONFIG_AUTOLOAD_FILE)
+    end)
+    if not success then
+        return nil
+    end
+
+    local name = sanitizeConfigName(content)
+    if name == "" then
+        return nil
+    end
+
+    return name
+end
+
+local function saveAutoLoad(name)
+    local cleanName = sanitizeConfigName(name)
+    if cleanName == "" then
+        createNotification("Auto Load", "Select a config first!")
+        return false
+    end
+
+    local ok = pcall(function()
+        writefile(CONFIG_AUTOLOAD_FILE, cleanName)
+    end)
+    if ok then
+        createNotification("Auto Load", "Auto load set to: " .. cleanName)
+        return true
+    end
+
+    createNotification("Auto Load", "Failed to save auto load.")
+    return false
+end
+
+local function autoLoadOnStart()
+    local autoName = getAutoLoadName()
+    if not autoName then
+        return
+    end
+
+    for _, name in ipairs(listConfigs()) do
+        if name == autoName then
+            task.delay(2, function()
+                loadConfig(autoName)
+            end)
+            return
+        end
+    end
+
+    if delfile then
+        pcall(function()
+            delfile(CONFIG_AUTOLOAD_FILE)
+        end)
+    end
+end
+
+-- ===== RAYFIELD UI =====
+
+local keybindPressedConn
+local lastKeybindBoxName
+local lastReleaseTime
+
+local focusTrackConn1 = UserInputService.TextBoxFocused:Connect(function(tb)
+    if tb and tb.Name == "KeybindBox" then
+        local el = tb.Parent and tb.Parent.Parent
+        if el and el.Name then
+            lastKeybindBoxName = el.Name
+        end
+    end
+end)
+local focusTrackConn2 = UserInputService.TextBoxFocusReleased:Connect(function()
+    lastReleaseTime = tick()
+end)
+table.insert(connections, focusTrackConn1)
+table.insert(connections, focusTrackConn2)
+
+local function createToggleWithKeybind(tab, toggleOptions)
+    local toggle = tab:CreateToggle(toggleOptions)
+
+    local keybindName = (toggleOptions.Name:gsub("^Show ", ""):gsub("^Enable ", "")) .. " Keybind"
+    local keybind = tab:CreateKeybind({
+        Name = keybindName,
+        CurrentKeybind = "None",
+        CallOnChange = true,
+        Callback = function(Key)
+            local entry = keybindRegistry[keybindName]
+            if entry then
+                entry.key = tostring(Key)
+            end
+        end,
+    })
+    keybindRegistry[keybindName] = {
+        keybind = keybind,
+        key = "None",
+        action = function()
+            toggle:Set(not toggle.CurrentValue)
+        end,
+    }
+
+    return toggle
+end
+
+if not keybindPressedConn then
+    keybindPressedConn = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if input.KeyCode == Enum.KeyCode.Escape then
+            if lastKeybindBoxName and lastReleaseTime and (tick() - lastReleaseTime) < 1 then
+                local entry = keybindRegistry[lastKeybindBoxName]
+                if entry then
+                    entry.keybind:Set("None")
+                end
+            end
+            lastKeybindBoxName = nil
+            lastReleaseTime = nil
+            return
+        end
+
+        if gameProcessed then return end
+        if UserInputService:GetFocusedTextBox() then return end
+
+        local pressed = input.KeyCode
+        for _, entry in pairs(keybindRegistry) do
+            local keyName = entry.key
+            if keyName and keyName ~= "None" then
+                if pressed == Enum.KeyCode[keyName] then
+                    entry.action()
+                end
+            end
+        end
+    end)
+    table.insert(connections, keybindPressedConn)
+end
+
+-- Combat Tab
+local CombatTab = Window:CreateTab("⚔️ Combat", 4483362458)
+autoParryToggle = createToggleWithKeybind(CombatTab, {
+    Name = "Auto Parry",
+    CurrentValue = false,
+    Callback = function(v)
+        autoParryEnabled = v
+        if not v then
+            autoParryPulse = autoParryPulse + 1
+            stopAutoFacing()
+            local character = LocalPlayer.Character
+            if character and character:GetAttribute("Blocking") == true then
+                Block.Unblock()
+            end
+        end
+    end
+})
+
+pingCompensationToggle = CombatTab:CreateToggle({
+    Name = "Ping Compensation",
+    CurrentValue = false,
+    Callback = function(v)
+        pingCompensationEnabled = v
+    end
+})
+
+autoFaceToggle = CombatTab:CreateToggle({
+    Name = "Auto Face",
+    CurrentValue = false,
+    Callback = function(v)
+        autoFaceEnabled = v
+        if not v then
+            stopAutoFacing()
+        end
+    end
+})
+
+healthBarsToggle = CombatTab:CreateToggle({
+    Name = "Show Healthbars",
+    CurrentValue = false,
+    Callback = function(v)
+        setHealthBarsVisible(v)
+    end
+})
+
+
+-- ===== FLING TAB =====
+local FlingTab = Window:CreateTab("🚀 Fling", 4483362458)
+
+-- Toggle
+flingToggleRef = createToggleWithKeybind(FlingTab, {
+    Name = "Enable Fling",
+    CurrentValue = false,
+    Callback = function(v)
+        if v ~= flingActive then
+            toggleFling(v)
+        end
+    end
+})
+
+-- Power Slider
+flingPowerSlider = FlingTab:CreateSlider({
+    Name = "Fling Power",
+    Range = {0, 100},
+    Increment = 1,
+    CurrentValue = 50,
+    Callback = function(v)
+        flingPower = v
+    end
+})
+
+-- Target Mode Status
+targetStatusLabel = FlingTab:CreateLabel("Target Mode: OFF")
+updateTargetStatusLabel()
+
+-- Target Dropdown
+targetDropdown = FlingTab:CreateDropdown({
+    Name = "Target Player",
+    Options = {},
+    CurrentOption = "",
+    Callback = function(option)
+
+        if updatingDropdown then
+            return
+        end
+
+        local selected = option
+
+        if typeof(option) == "table" then
+            selected = option[1] or option.Name
+        elseif typeof(option) == "Instance" and option:IsA("Player") then
+            selected = option.Name
+        end
+
+        -- Ignore programmatic clears
+        if selected == nil or selected == "" then
+            return
+        end
+
+        if not flingActive then
+            if tick() - lastFlingError > 1 then
+                lastFlingError = tick()
+                createNotification("Error", "Fling must be enabled before selecting a target!")
+            end
+
+            task.defer(function()
+                if targetDropdown then
+                    updatingDropdown = true
+                    targetDropdown:Set("")
+                    task.defer(function()
+                        updatingDropdown = false
+                    end)
+                end
+            end)
+
+            return
+        end
+
+        for _, p in ipairs(Players:GetPlayers()) do
+    if p.Name == selected then
+        setTarget(p)
+        break
+    end
+end
+    end
+})
+
+-- SAFE refresh function with pcall
+local function refreshPlayerDropdown()
+    if not targetDropdown then return end
+    local playerNames = {}
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            table.insert(playerNames, p.Name)
+        end
+    end
+    -- Use pcall to catch any errors from Refresh
+    local success, err = pcall(function()
+        targetDropdown:Refresh(playerNames, true)
+    end)
+    if not success then
+        warn("Failed to refresh dropdown: " .. tostring(err))
+    end
+end
+
+-- Initial refresh with a small delay
+task.delay(0.1, refreshPlayerDropdown)
+
+-- Refresh when players join/leave
+table.insert(connections, Players.PlayerAdded:Connect(refreshPlayerDropdown))
+table.insert(connections, Players.PlayerRemoving:Connect(refreshPlayerDropdown))
+
+table.insert(connections, Players.PlayerRemoving:Connect(function(plr)
+    if plr == targetPlayer then
+        targetPlayer = nil
+
+        local wasTargetMode = targetMode
+        targetMode = false
+
+        updateTargetStatusLabel()
+
+        if targetDropdown then
+            updatingDropdown = true
+            targetDropdown:Set("")
+            task.defer(function()
+                updatingDropdown = false
+            end)
+        end
+
+        createNotification("Target", "Target left the game.")
+
+        if wasTargetMode then
+            createNotification("Target Mode", "OFF")
+        end
+    end
+end))
+
+-- Clear Target
+FlingTab:CreateButton({
+    Name = "Clear Target",
+    Callback = function()
+    if not targetPlayer and not targetMode then
+        createNotification("Target", "No target to clear.")
+        return
+    end
+
+    setTarget(nil)
+
+if targetDropdown then
+    updatingDropdown = true
+    targetDropdown:Set("")
+    task.defer(function()
+        updatingDropdown = false
+    end)
+ end
+end
+})
+
+-- Usernames Toggle
+showUsernamesToggle = createToggleWithKeybind(FlingTab, {
+    Name = "Show Usernames",
+    CurrentValue = false,
+    Callback = function(v)
+        setNameTagsVisible(v)
+    end
+})
+
+-- Rejoin Button
+FlingTab:CreateButton({
+    Name = "Rejoin Server",
+    Callback = rejoinServer
+})
+
+-- Unload Button
+FlingTab:CreateButton({
+    Name = "Unload Hub",
+    Callback = function()
+---disable shadow step
+blinkOn = false
+
+if blinkConnection then
+    blinkConnection:Disconnect()
+    blinkConnection = nil
+end
+
+
+-- Disable auto parry and invalidate pending pulses.
+autoParryEnabled = false
+pingCompensationEnabled = false
+pingSamplerActive = false
+autoParryPulse = autoParryPulse + 1
+autoFaceEnabled = false
+namesVisible = false
+nameTagsActive = false
+healthBarsVisible = false
+healthBarsActive = false
+stopAutoFacing()
+if LocalPlayer.Character and LocalPlayer.Character:GetAttribute("Blocking") == true then
+    Block.Unblock()
+end
+
+
+-- Stop noclip
+if noclipConnection then
+    noclipConnection:Disconnect()
+    noclipConnection = nil
+end
+
+noclipEnabled = false
+
+if LocalPlayer.Character then
+    for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = true
+        end
+    end
+end
+
+        --stop spectating 
+        stopSpectating()
+
+         --stop flying
+         if flying then
+    StopFly()
+end
+
+         -- Stop fling
+        stopFlingLoop()
+        stopFlingMonitor()
+        restoreGhostedParts()
+
+         --stop antifling
+      if antiFlingConnection then
+      antiFlingConnection:Disconnect()
+      antiFlingConnection = nil
+   end
+   antiFlingEnabled = false
+   for part, value in pairs(originalCanCollide) do
+       if part and part.Parent then
+           part.CanCollide = value
+       end
+   end
+   table.clear(originalCanCollide)
+   clearAntiFlingWiring()
+
+         --stop antivoid
+         if antiVoidEnabled then
+            toggleAntiVoid(false)
+         end
+
+         --stop auto heartbeat
+         _G.__heartAuto = false
+
+
+        -- Disconnect stored connections
+        for _, connection in ipairs(connections) do
+            if connection then
+                connection:Disconnect()
+            end
+        end
+
+        -- Remove player overlays
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr.Character then
+                local head = plr.Character:FindFirstChild("Head")
+                if head then
+                    local tag = head:FindFirstChild("MariNameTag")
+                    if tag then
+                        tag:Destroy()
+                    end
+
+                    local healthBar = head:FindFirstChild("MariHealthBar")
+                    if healthBar then
+                        healthBar:Destroy()
+                    end
+                end
+            end
+        end
+
+
+        -- Destroy sound
+        if sound then
+            sound:Destroy()
+        end
+
+        -- Close the UI
+        pcall(function()
+            Rayfield:Destroy()
+        end)
+    end
+})
+
+-- ===== HEART AUTO-CLICK =====
+
+local function getHeartCenter()
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pg then return nil end
+    local deathUI = pg:FindFirstChild("DeathUI")
+    if not deathUI or not deathUI.Enabled then return nil end
+    local frame = deathUI:FindFirstChild("Frame")
+    if not frame then return nil end
+    local heartButton = frame:FindFirstChild("HeartButton")
+    if not heartButton or not heartButton.Visible or not heartButton.Active then return nil end
+    local absPos = heartButton.AbsolutePosition
+    local absSize = heartButton.AbsoluteSize
+    return absPos.X + absSize.X / 2, absPos.Y + absSize.Y / 2
+end
+
+local function ensureHeartMonitor()
+    if not _G.__heartAutoMonitor then
+        _G.__heartAutoMonitor = true
+        task.spawn(function()
+            while _G.__heartAuto do
+                local cx, cy = getHeartCenter()
+                if cx then
+                    while _G.__heartAuto do
+                        local cxx, cyy = getHeartCenter()
+                        if not cxx then break end
+                        VirtualInputManager:SendMouseButtonEvent(cxx, cyy, 0, true, game, 1)
+                        task.wait(0.05)
+                        VirtualInputManager:SendMouseButtonEvent(cxx, cyy, 0, false, game, 1)
+                        task.wait(0.1)
+                    end
+                else
+                    task.wait(0.2)
+                end
+            end
+            _G.__heartAutoMonitor = false
+        end)
+    end
+end
+
+-- ===== MISC TAB =====
+local MiscTab = Window:CreateTab("🛠️ Misc", 4483362458)
+
+antiFlingToggle = MiscTab:CreateToggle({
+    Name = "Anti Fling",
+    CurrentValue = false,
+    Callback = function(v)
+        toggleAntiFling(v)
+    end
+})
+
+antiVoidToggle = MiscTab:CreateToggle({
+    Name = "Anti Void",
+    CurrentValue = false,
+    Callback = function(v)
+        toggleAntiVoid(v)
+    end
+})
+
+_G.__heartAuto = false
+
+heartAutoToggle = MiscTab:CreateToggle({
+    Name = "Auto Heartbeat",
+    CurrentValue = false,
+    Callback = function(v)
+        _G.__heartAuto = v
+        if v then
+            ensureHeartMonitor()
+        end
+    end
+})
+
+flyToggle = createToggleWithKeybind(MiscTab, {
+    Name = "Fly",
+    CurrentValue = false,
+    Callback = function(v)
+        if v then
+            StartFly()
+        else
+            StopFly()
+        end
+    end
+})
+
+flySpeedSlider = MiscTab:CreateSlider({
+    Name = "Fly Speed",
+    Range = {1,10},
+    Increment = 1,
+    CurrentValue = 1,
+    Callback = function(v)
+        flySpeed = v
+    end
+})
+
+noclipToggle = createToggleWithKeybind(MiscTab, {
+    Name = "Noclip",
+    CurrentValue = false,
+    Callback = function(v)
+        toggleNoclip(v)
+    end
+})
+
+shadowStepToggle = createToggleWithKeybind(MiscTab, {
+     Name = "Enable Shadow step",
+    CurrentValue = false,
+    Callback = function(Value)
+        blinkOn = Value
+    end
+})
+
+shadowStepDistSlider = MiscTab:CreateSlider({
+    Name = "Shadow step Distance",
+    Range = {10,120},
+    Increment = 1,
+    CurrentValue = 40,
+    Callback = function(Value)
+        blinkDist = Value
+    end
+})
+
+blinkConnection = UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+
+    if input.KeyCode == Enum.KeyCode.Q then
+        doBlink()
+    end
+end)
+
+
+MiscTab:CreateInput({
+    Name = "Spectate Player",
+    PlaceholderText = "Username...",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(text)
+        spectateName = text
+    end
+})
+
+MiscTab:CreateButton({
+    Name = "Start Spectating",
+    Callback = function()
+        startSpectating(spectateName)
+    end
+})
+
+MiscTab:CreateButton({
+    Name = "Stop Spectating",
+    Callback = function()
+        stopSpectating()
+    end
+})
+
+MiscTab:CreateInput({
+    Name = "Teleport To Player",
+    PlaceholderText = "Username...",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(text)
+        teleportName = text
+    end
+})
+
+MiscTab:CreateButton({
+    Name = "Teleport",
+    Callback = function()
+        teleportToPlayer(teleportName)
+    end
+})
+
+MiscTab:CreateButton({
+    Name = "Force Reset",
+    Callback = function()
+        local character = LocalPlayer.Character
+        local hrp = character and character:FindFirstChild("HumanoidRootPart")
+        if not hrp then
+            createNotification("Force Reset", "Character unavailable.")
+            return
+        end
+
+        local success = pcall(function()
+            hrp.AssemblyLinearVelocity = Vector3.new(0, 200000, 0)
+        end)
+
+        if not success then
+            pcall(function()
+                hrp.Velocity = Vector3.new(0, 200000, 0)
+            end)
+        end
+
+        createNotification("Force Reset", "Launched!")
+    end
+})
+
+-- ===== CONFIG TAB =====
+local ConfigTab = Window:CreateTab("⚙️ Config", 4483362458)
+
+ConfigTab:CreateInput({
+    Name = "Config Name",
+    PlaceholderText = "Name for your config...",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(text)
+        configNameInput = text
+    end
+})
+
+ConfigTab:CreateButton({
+    Name = "Save Config",
+    Callback = function()
+        saveConfig(configNameInput)
+    end
+})
+
+configDropdown = ConfigTab:CreateDropdown({
+    Name = "Select Config",
+    Options = {},
+    CurrentOption = "",
+    Callback = function(option)
+        if typeof(option) == "table" then
+            option = option[1]
+        end
+        selectedConfig = option or nil
+    end
+})
+
+ConfigTab:CreateButton({
+    Name = "Load Config",
+    Callback = function()
+        loadConfig(selectedConfig)
+    end
+})
+
+autoLoadDropdown = ConfigTab:CreateDropdown({
+    Name = "Auto Load Config",
+    Options = {},
+    CurrentOption = "",
+    Callback = function(option)
+        if typeof(option) == "table" then
+            option = option[1]
+        end
+        autoLoadSelected = option or nil
+    end
+})
+
+ConfigTab:CreateButton({
+    Name = "Auto Load Save",
+    Callback = function()
+        saveAutoLoad(autoLoadSelected)
+    end
+})
+
+ConfigTab:CreateButton({
+    Name = "Delete Config",
+    Callback = function()
+        deleteConfig(selectedConfig)
+    end
+})
+
+-- Populate config dropdowns and apply auto-load if set
+task.delay(0.3, refreshConfigDropdowns)
+autoLoadOnStart()
+
+-- ===== AUTO PARRY LOGIC =====
+local CombatConfig = require(ReplicatedStorage.Shared.Config.CombatConfig)
+local attackDelays = {}
+local AUTO_FACE_BIND_NAME = "MariHubAutoFace"
+local faceCharacter
+local faceTarget
+local faceUntil = 0
+local faceHumanoid
+local oldAutoRotate
+
+if typeof(_G.__mariHubAutoFaceCleanup) == "function" then
+    pcall(_G.__mariHubAutoFaceCleanup)
+end
+
+stopAutoFacing = function()
+    RunService:UnbindFromRenderStep(AUTO_FACE_BIND_NAME)
+    if faceHumanoid and faceHumanoid.Parent and oldAutoRotate ~= nil then
+        faceHumanoid.AutoRotate = oldAutoRotate
+    end
+    faceCharacter = nil
+    faceTarget = nil
+    faceHumanoid = nil
+    oldAutoRotate = nil
+    faceUntil = 0
+end
+_G.__mariHubAutoFaceCleanup = stopAutoFacing
+
+local function faceAttacker(character, attackerRoot)
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not root or not attackerRoot then
+        return
+    end
+
+    local target = Vector3.new(attackerRoot.Position.X, root.Position.Y, attackerRoot.Position.Z)
+    if (target - root.Position).Magnitude > 0.01 then
+        root.CFrame = CFrame.lookAt(root.Position, target)
+    end
+end
+
+local function holdAutoFacing(character, attackerRoot, duration)
+    if not autoParryEnabled or not autoFaceEnabled then
+        return
+    end
+
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid or not attackerRoot then
+        return
+    end
+
+    if faceHumanoid ~= humanoid then
+        stopAutoFacing()
+        faceHumanoid = humanoid
+        oldAutoRotate = humanoid.AutoRotate
+    end
+
+    faceCharacter = character
+    faceTarget = attackerRoot
+    faceUntil = math.max(faceUntil, os.clock() + duration)
+    humanoid.AutoRotate = false
+
+    RunService:UnbindFromRenderStep(AUTO_FACE_BIND_NAME)
+    RunService:BindToRenderStep(AUTO_FACE_BIND_NAME, Enum.RenderPriority.Camera.Value + 2, function()
+        if not autoParryEnabled
+            or not autoFaceEnabled
+            or os.clock() >= faceUntil
+            or faceCharacter ~= LocalPlayer.Character
+            or not faceTarget
+            or not faceTarget.Parent
+        then
+            stopAutoFacing()
+            return
+        end
+        faceAttacker(faceCharacter, faceTarget)
+    end)
+end
+
+local animations = ReplicatedStorage:FindFirstChild("Animations")
+if animations then
+    for _, animation in ipairs(animations:GetDescendants()) do
+        if animation:IsA("Animation") then
+            local lowerName = animation.Name:lower()
+            local combo = tonumber(lowerName:match("^(%d)"))
+            local isM1 = combo and lowerName:find("m1", 1, true)
+            local isM2 = lowerName:sub(1, 2) == "m2"
+            if isM1 or isM2 then
+                local style = "default"
+                local parent = animation.Parent
+                if parent and parent.Name ~= "BaseCombat" then
+                    style = parent.Name:lower():gsub("otheranims$", ""):gsub("anims$", "")
+                end
+
+                local delay
+                if isM1 then
+                    delay = CombatConfig.GetScaledStyleM1HitboxDelay(style, combo, 1)
+                else
+                    delay = CombatConfig.GetStyleM2HitboxDelay(style)
+                end
+
+                local id = animation.AnimationId:match("%d+")
+                if id and typeof(delay) == "number" then
+                    attackDelays[id] = delay
+                end
+            end
+        end
+    end
+end
+
+local function canAutoParry(character)
+    return character
+        and character.Parent
+        and character:GetAttribute("Equip") == true
+        and character:GetAttribute("Ragdoll") ~= true
+        and character:GetAttribute("Downed") ~= true
+        and character:GetAttribute("GuardBroken") ~= true
+        and character:GetAttribute("Greenzone") ~= true
+        and character:GetAttribute("RpCombatLocked") ~= true
+end
+
+local function stampBlockInput()
+    local credits = _G.__GakuranAcCombatInputCreditAt
+    if typeof(credits) ~= "table" then
+        credits = {}
+        _G.__GakuranAcCombatInputCreditAt = credits
+    end
+    credits["Block.Activated"] = tick()
+end
+
+local function applyAutoParry()
+    local character = LocalPlayer.Character
+    if not autoParryEnabled or not canAutoParry(character) then
+        return
+    end
+
+    autoParryPulse = autoParryPulse + 1
+    local thisPulse = autoParryPulse
+    task.spawn(function()
+        if not autoParryEnabled
+            or character ~= LocalPlayer.Character
+            or character:GetAttribute("Equip") ~= true
+            or not canAutoParry(character)
+        then
+            return
+        end
+
+        if character:GetAttribute("Blocking") == true then
+            Block.Unblock()
+            task.wait()
+        end
+
+        stampBlockInput()
+        Block.Block()
+
+        task.delay(AUTO_PARRY_HOLD, function()
+            if autoParryEnabled
+                and thisPulse == autoParryPulse
+                and character == LocalPlayer.Character
+                and character:GetAttribute("Blocking") == true
+            then
+                Block.Unblock()
+            end
+        end)
+    end)
+end
+
+local function onEnemyAnimation(character, track)
+    if not autoParryEnabled then
+        return
+    end
+
+    local animation = track.Animation
+    local id = animation and animation.AnimationId:match("%d+")
+    local delay = id and attackDelays[id]
+    if not delay then
+        return
+    end
+
+    local myCharacter = LocalPlayer.Character
+    local myRoot = myCharacter and myCharacter:FindFirstChild("HumanoidRootPart")
+    local enemyRoot = character:FindFirstChild("HumanoidRootPart")
+    if not myRoot or not enemyRoot or (myRoot.Position - enemyRoot.Position).Magnitude > AUTO_PARRY_RANGE then
+        return
+    end
+
+    if myCharacter:GetAttribute("Equip") ~= true then
+        return
+    end
+
+    local speed = math.max(math.abs(track.Speed), 0.05)
+    local parryDelay = math.max(0, delay / speed - getAutoParryLead())
+    holdAutoFacing(myCharacter, enemyRoot, parryDelay + AUTO_PARRY_HOLD + 0.08)
+    task.delay(parryDelay, function()
+        if not autoParryEnabled then
+            return
+        end
+
+        myCharacter = LocalPlayer.Character
+        myRoot = myCharacter and myCharacter:FindFirstChild("HumanoidRootPart")
+        enemyRoot = character:FindFirstChild("HumanoidRootPart")
+        if myRoot and enemyRoot and (myRoot.Position - enemyRoot.Position).Magnitude <= AUTO_PARRY_RANGE then
+            holdAutoFacing(myCharacter, enemyRoot, AUTO_PARRY_HOLD + 0.08)
+            applyAutoParry()
+        end
+    end)
+end
+
+local function wireAutoParryCharacter(player, character)
+    if player == LocalPlayer then
+        return
+    end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 10)
+    local animator = humanoid and (humanoid:FindFirstChildOfClass("Animator") or humanoid:WaitForChild("Animator", 5))
+    if animator then
+        table.insert(connections, animator.AnimationPlayed:Connect(function(track)
+            onEnemyAnimation(character, track)
+        end))
+    end
+end
+
+local function wireAutoParryPlayer(player)
+    if player.Character then
+        task.spawn(wireAutoParryCharacter, player, player.Character)
+    end
+    table.insert(connections, player.CharacterAdded:Connect(function(character)
+        wireAutoParryCharacter(player, character)
+    end))
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+    wireAutoParryPlayer(player)
+end
+table.insert(connections, Players.PlayerAdded:Connect(wireAutoParryPlayer))
+
+-- ===== STARTUP =====
+if isBypassUser(LocalPlayer.UserId) then
+    Rayfield:Notify({
+        Title = "MARI-HUB",
+        Content = getBypassMessage(LocalPlayer.UserId),
+        Duration = 3,
+    })
+else
+    Rayfield:Notify({
+        Title = "MARI-HUB",
+        Content = "Auto Parry + Fling loaded (stable)",
+        Duration = 8,
+    })
+end
+
+-- Show directly after the normal startup notification
+if usedSavedKey then
+    task.delay(0.3, function()
+        Rayfield:Notify({
+            Title = "MARI-HUB",
+            Content = "Saved key detected! Skipped key system.",
+            Duration = 4,
+        })
+    end)
+end
+
+sendExecutionLog()
+
+end
+
+-------------------------------------------
+-------------KEY LOGIC + UI----------------
+-------------------------------------------
+local CORRECT_KEY = "mari999mari"  
+
+
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+
+local KEY_FILE = "MARI_HUB_KEY_SAVE.txt"
+local KEY_DURATION = 15 * 60 * 60 -- 15 hours in seconds
+
+local function saveKeyAccess()
+    if not writefile then
+        return
+    end
+
+    local expirationTime = os.time() + KEY_DURATION
+
+    pcall(function()
+        writefile(KEY_FILE, tostring(expirationTime))
+    end)
+end
+
+local function hasSavedKeyAccess()
+    if not isfile or not readfile then
+        return false
+    end
+
+    if not isfile(KEY_FILE) then
+        return false
+    end
+
+    local success, savedData = pcall(function()
+        return readfile(KEY_FILE)
+    end)
+
+    if not success then
+        return false
+    end
+
+    local expirationTime = tonumber(savedData)
+
+    if not expirationTime then
+        return false
+    end
+
+    if os.time() < expirationTime then
+        return true
+    end
+
+    -- Saved key expired
+    if delfile then
+        pcall(function()
+            delfile(KEY_FILE)
+        end)
+    end
+
+    return false
+end
+
+-- ===== OWNER BYPASS =====
+
+local LocalPlayer = game:GetService("Players").LocalPlayer
+
+if isBypassUser(LocalPlayer.UserId) then
+    LoadHub()
+    return
+end
+
+-- ===== SAVED KEY CHECK =====
+
+if hasSavedKeyAccess() then
+    LoadHub(true)
+    return
+end
+
+local KeyWindow = Rayfield:CreateWindow({
+    Name = "MARI-HUB | Key System",
+    LoadingTitle = "MARI-HUB",
+    LoadingSubtitle = "Enter Key",
+    Theme = "Bloom",
+})
+
+
+local EnteredKey = ""
+
+local KeyTab = KeyWindow:CreateTab("🔑 Key", 4483362458)
+
+KeyTab:CreateInput({
+    Name = "Enter Key",
+    PlaceholderText = "Key...",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(text)
+        EnteredKey = text
+    end
+})
+
+KeyTab:CreateButton({
+    Name = "Verify",
+    Callback = function()
+        if EnteredKey == CORRECT_KEY then
+    saveKeyAccess() -- Save the 15-hour access
+
+    Rayfield:Notify({
+        Title = "Success",
+        Content = "Key accepted! Saved for 15 hours.",
+        Duration = 3,
+    })
+
+            task.wait(1)
+
+            LoadHub()
+        else
+            Rayfield:Notify({
+                Title = "Error",
+                Content = "Invalid Key, Click Get key!",
+                Duration = 3,
+            })
+        end
+    end
+})
+
+local DISCORD_INVITE = "https://discord.gg/raNexsPGdd"
+
+KeyTab:CreateButton({
+    Name = "🔑 Get Key",
+    Callback = function()
+        local success = pcall(function()
+            setclipboard(DISCORD_INVITE)
+        end)
+
+        if success then
+            Rayfield:Notify({
+                Title = "MARI-HUB",
+                Content = "Discord invite copied! Join the server to get your key.",
+                Duration = 5,
+            })
+        else
+            Rayfield:Notify({
+                Title = "MARI-HUB",
+                Content = "Clipboard is unavailable in this executor.",
+                Duration = 5,
+            })
+        end
+    end
+})
