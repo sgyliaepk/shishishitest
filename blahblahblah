@@ -466,16 +466,28 @@ local function startFlingLoop()
         local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         if not hrp then return end
 
-        for _, p in pairs(Players:GetPlayers()) do
-            if p ~= LocalPlayer and p.Character then
-                wireFlingCharacter(p.Character)
+        local victims = {}
+        if targetMode and targetPlayer and targetPlayer.Character then
+            table.insert(victims, targetPlayer.Character)
+        else
+            for _, p in pairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer and p.Character then
+                    table.insert(victims, p.Character)
+                end
             end
         end
 
-        for _, parts in pairs(flingPartsByChar) do
-            for _, part in ipairs(parts) do
-                if part and part.Parent and part.CanCollide then
-                    setPartGhosted(part)
+        for _, char in ipairs(victims) do
+            wireFlingCharacter(char)
+        end
+
+        for _, char in ipairs(victims) do
+            local parts = flingPartsByChar[char]
+            if parts then
+                for _, part in ipairs(parts) do
+                    if part and part.Parent and part.CanCollide then
+                        setPartGhosted(part)
+                    end
                 end
             end
         end
