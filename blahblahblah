@@ -88,6 +88,19 @@ local pingCompensationEnabled = false
 local autoParryPulse = 0
 local autoFaceEnabled = false
 local stopAutoFacing = function() end
+local infStaminaEnabled = false
+local infStaminaConnection = nil
+local noDodgeCooldownEnabled = false
+local noDodgeCooldownModule = nil
+local noDodgeCooldownOriginal = nil
+local noDodgeCooldownHook = nil
+local antiStunEnabled = false
+local antiStunConnection = nil
+local espEnabled = false
+local infCamZoomEnabled = false
+local savedCamMaxZoom = nil
+local jetpack = {enabled = false, velocity = nil, connection = nil}
+local returnByDeath = {enabled = false, deathPosition = nil, deathConnections = {}, teleportToken = 0}
 
 task.spawn(function()
     while pingSamplerActive do
@@ -140,30 +153,13 @@ local lastFlingError = 0
 local updatingDropdown = false
 
 -- ===== CONFIG VARIABLES =====
-local autoParryToggle = nil
-local pingCompensationToggle = nil
-local autoFaceToggle = nil
-local healthBarsToggle = nil
-local flingPowerSlider = nil
-local showUsernamesToggle = nil
-local antiFlingToggle = nil
-local antiVoidToggle = nil
-local flyToggle = nil
-local flySpeedSlider = nil
-local noclipToggle = nil
-local shadowStepToggle = nil
-local shadowStepDistSlider = nil
-local configDropdown = nil
-local autoLoadDropdown = nil
-local configNameInput = ""
-local selectedConfig = nil
-local autoLoadSelected = nil
-local heartAutoToggle = nil
+local UI = {
+    configNameInput = "",
+    unloaded = false,
+}
 
 
-local flingToggleRef = nil
-local targetStatusLabel = nil
-local targetDropdown = nil
+
 
 -- ===== FLY VARIABLES =====
 local flying = false
@@ -299,7 +295,7 @@ end
 
 -- ===== TARGET FUNCTIONS =====
 local function updateTargetStatusLabel()
-    if not targetStatusLabel then
+    if not UI.targetStatusLabel then
         return
     end
 
@@ -314,7 +310,7 @@ local function updateTargetStatusLabel()
         end
     end
 
-    targetStatusLabel:Set("Target Mode: " .. statusText)
+    UI.targetStatusLabel:Set("Target Mode: " .. statusText)
 end
 
 -- Returns TRUE if target was set, FALSE if failed
@@ -637,8 +633,8 @@ local function toggleFling(newState)
 
     playSound()
 
-    if flingToggleRef then
-        flingToggleRef:Set(flingActive)
+    if UI.flingToggleRef then
+        UI.flingToggleRef:Set(flingActive)
     end
 
     updateTargetStatusLabel()
@@ -1239,7 +1235,7 @@ local hrp = character:FindFirstChild("HumanoidRootPart")
     end)
 
     blinkCooldown = true
-    task.delay(0.2, function()
+    task.delay(0.1, function()
         blinkCooldown = false
     end)
 end
@@ -1260,6 +1256,239 @@ local function rejoinServer()
     end)
     task.delay(10, function() rejoinCooldown = false end)
 end
+
+-- ===== ESP =====
+local ESP_COLOR = Color3.fromRGB(255, 105, 180)
+local espHL = {}
+
+local function addESP(p)
+    if p == LocalPlayer then return end
+    local ch = p.Character
+    if not ch or espHL[p] then return end
+    local h = Instance.new("Highlight")
+    h.FillColor = ESP_COLOR
+    h.OutlineColor = Color3.new(0, 0, 0)
+    h.FillTransparency = 0.35
+    h.OutlineTransparency = 0
+    h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    h.Adornee = ch
+    h.Parent = ch
+    espHL[p] = h
+end
+
+local function remESP(p)
+    if espHL[p] then
+        espHL[p]:Destroy()
+        espHL[p] = nil
+    end
+end
+
+local function clearESP()
+    for p in pairs(espHL) do
+        remESP(p)
+    end
+end
+
+local function refreshESP()
+    if not espEnabled then
+        clearESP()
+        return
+    end
+    for _, p in ipairs(Players:GetPlayers()) do
+        addESP(p)
+    end
+end
+
+table.insert(connections, Players.PlayerAdded:Connect(function(p)
+    if espEnabled then
+        table.insert(connections, p.CharacterAdded:Connect(function()
+            task.wait(0.5)
+            if espEnabled then
+                addESP(p)
+            end
+        end))
+    end
+end))
+table.insert(connections, Players.PlayerRemoving:Connect(remESP))
+
+table.insert(connections, RunService.Heartbeat:Connect(function()
+    if espEnabled then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then
+                if p.Character and not espHL[p] then
+                    addESP(p)
+                elseif not p.Character and espHL[p] then
+                    remESP(p)
+                end
+            end
+        end
+    end
+end))
+
+local function setEspEnabled(state)
+    espEnabled = state
+    refreshESP()
+    createNotification("ESP", state and "Enabled" or "Disabled")
+end
+
+-- ===== JETPACK =====
+function jetpack.destroyVelocity()
+    if jetpack.velocity then
+        jetpack.velocity:Destroy()
+        jetpack.velocity = nil
+    end
+end
+
+function jetpack.toggle(state)
+    jetpack.enabled = state
+
+    if jetpack.connection then
+        jetpack.connection:Disconnect()
+        jetpack.connection = nil
+    end
+    jetpack.destroyVelocity()
+
+    if not state then
+        return
+    end
+
+    jetpack.connection = RunService.Heartbeat:Connect(function()
+        if not UserInputService:IsKeyDown(Enum.KeyCode.Space) then
+            jetpack.destroyVelocity()
+            return
+        end
+
+        local character = LocalPlayer.Character
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        if not root then
+            jetpack.destroyVelocity()
+            return
+        end
+
+        if not jetpack.velocity or jetpack.velocity.Parent ~= root then
+            jetpack.destroyVelocity()
+            jetpack.velocity = Instance.new("BodyVelocity")
+            jetpack.velocity.Name = "MariJetpackVelocity"
+            jetpack.velocity.MaxForce = Vector3.new(0, 1e5, 0)
+            jetpack.velocity.P = 5000
+            jetpack.velocity.Parent = root
+        end
+
+        jetpack.velocity.Velocity = Vector3.new(
+            0,
+            math.min(jetpack.velocity.Velocity.Y + 2, 80),
+            0
+        )
+    end)
+end
+
+-- ===== RETURN BY DEATH =====
+function returnByDeath.wireCharacter(character)
+    for _, connection in ipairs(returnByDeath.deathConnections) do
+        connection:Disconnect()
+    end
+    table.clear(returnByDeath.deathConnections)
+
+    if not returnByDeath.enabled then
+        return
+    end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 10)
+    if not humanoid then
+        return
+    end
+
+    local function captureDeathPosition()
+        local root = character:FindFirstChild("HumanoidRootPart")
+        if returnByDeath.enabled and root then
+            returnByDeath.deathPosition = root.Position
+        end
+    end
+
+    table.insert(returnByDeath.deathConnections, humanoid.Died:Connect(captureDeathPosition))
+    table.insert(returnByDeath.deathConnections, character:GetAttributeChangedSignal("Dead"):Connect(function()
+        if character:GetAttribute("Dead") == true then
+            captureDeathPosition()
+        end
+    end))
+
+    if character:GetAttribute("Dead") == true then
+        captureDeathPosition()
+    end
+end
+
+function returnByDeath.teleportCharacter(character)
+    local deathPosition = returnByDeath.deathPosition
+    if not returnByDeath.enabled or not deathPosition then
+        return
+    end
+
+    returnByDeath.teleportToken = returnByDeath.teleportToken + 1
+    local token = returnByDeath.teleportToken
+
+    task.spawn(function()
+        local root = character:WaitForChild("HumanoidRootPart", 10)
+        local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 10)
+        if not root or not humanoid or not returnByDeath.enabled or token ~= returnByDeath.teleportToken then
+            return
+        end
+
+        local startedAt = os.clock()
+        local wasSeated = false
+        while true do
+            if not returnByDeath.enabled
+                or token ~= returnByDeath.teleportToken
+                or character ~= LocalPlayer.Character
+                or not root.Parent
+            then
+                return
+            end
+
+            local seated = humanoid.Sit or humanoid.SeatPart ~= nil
+            wasSeated = wasSeated or seated
+            character:PivotTo(CFrame.new(deathPosition) * character:GetPivot().Rotation)
+
+            -- Keep the destination through the chair state, then release on Space.
+            if wasSeated and not seated then
+                break
+            end
+            if not wasSeated and os.clock() - startedAt >= 1 then
+                break
+            end
+
+            RunService.Heartbeat:Wait()
+        end
+
+        returnByDeath.deathPosition = nil
+    end)
+end
+
+function returnByDeath.toggle(state)
+    returnByDeath.enabled = state
+    returnByDeath.teleportToken = returnByDeath.teleportToken + 1
+
+    if not state then
+        returnByDeath.deathPosition = nil
+        for _, connection in ipairs(returnByDeath.deathConnections) do
+            connection:Disconnect()
+        end
+        table.clear(returnByDeath.deathConnections)
+        return
+    end
+
+    local character = LocalPlayer.Character
+    if character then
+        task.spawn(returnByDeath.wireCharacter, character)
+    end
+end
+
+table.insert(connections, LocalPlayer.CharacterAdded:Connect(function(character)
+    local shouldReturn = returnByDeath.enabled and returnByDeath.deathPosition ~= nil
+    task.spawn(returnByDeath.wireCharacter, character)
+    if shouldReturn then
+        returnByDeath.teleportCharacter(character)
+    end
+end))
 
 -- ===== INIT PLAYER OVERLAYS =====
 for _, plr in pairs(Players:GetPlayers()) do
@@ -1313,14 +1542,14 @@ end
 
 local function refreshConfigDropdowns()
     local configs = listConfigs()
-    if configDropdown then
+    if UI.configDropdown then
         pcall(function()
-            configDropdown:Refresh(configs, true)
+            UI.configDropdown:Refresh(configs, true)
         end)
     end
-    if autoLoadDropdown then
+    if UI.autoLoadDropdown then
         pcall(function()
-            autoLoadDropdown:Refresh(configs, true)
+            UI.autoLoadDropdown:Refresh(configs, true)
         end)
     end
 end
@@ -1330,6 +1559,13 @@ local function collectSettings()
         autoParryEnabled = autoParryEnabled,
         pingCompensationEnabled = pingCompensationEnabled,
         autoFaceEnabled = autoFaceEnabled,
+        infStaminaEnabled = infStaminaEnabled,
+        noDodgeCooldownEnabled = noDodgeCooldownEnabled,
+        antiStunEnabled = antiStunEnabled,
+        espEnabled = espEnabled,
+        infCamZoomEnabled = infCamZoomEnabled,
+        jetpackEnabled = jetpack.enabled,
+        returnByDeathEnabled = returnByDeath.enabled,
         healthBarsVisible = healthBarsVisible,
         flingActive = flingActive,
         flingPower = flingPower,
@@ -1428,21 +1664,28 @@ local function applySettings(settings)
         return
     end
 
-    setToggleIfChanged(autoParryToggle, settings.autoParryEnabled == true)
-    setToggleIfChanged(pingCompensationToggle, settings.pingCompensationEnabled == true)
-    setToggleIfChanged(autoFaceToggle, settings.autoFaceEnabled == true)
-    setToggleIfChanged(healthBarsToggle, settings.healthBarsVisible == true)
-    setToggleIfChanged(flingToggleRef, settings.flingActive == true)
-    setToggleIfChanged(flingPowerSlider, settings.flingPower or flingPower)
-    setToggleIfChanged(showUsernamesToggle, settings.namesVisible == true)
-    setToggleIfChanged(antiFlingToggle, settings.antiFlingEnabled == true)
-    setToggleIfChanged(antiVoidToggle, settings.antiVoidEnabled == true)
-    setToggleIfChanged(flyToggle, settings.flying == true)
-    setToggleIfChanged(flySpeedSlider, settings.flySpeed or flySpeed)
-    setToggleIfChanged(noclipToggle, settings.noclipEnabled == true)
-    setToggleIfChanged(shadowStepToggle, settings.blinkOn == true)
-    setToggleIfChanged(shadowStepDistSlider, settings.blinkDist or blinkDist)
-    setToggleIfChanged(heartAutoToggle, settings.heartAutoEnabled == true)
+    setToggleIfChanged(UI.autoParryToggle, settings.autoParryEnabled == true)
+    setToggleIfChanged(UI.pingCompensationToggle, settings.pingCompensationEnabled == true)
+    setToggleIfChanged(UI.autoFaceToggle, settings.autoFaceEnabled == true)
+    setToggleIfChanged(UI.infStaminaToggle, settings.infStaminaEnabled == true)
+    setToggleIfChanged(UI.noDodgeCooldownToggle, settings.noDodgeCooldownEnabled == true)
+    setToggleIfChanged(UI.antiStunToggle, settings.antiStunEnabled == true)
+    setToggleIfChanged(UI.espToggle, settings.espEnabled == true)
+    setToggleIfChanged(UI.infCamZoomToggle, settings.infCamZoomEnabled == true)
+    setToggleIfChanged(UI.jetpackToggle, settings.jetpackEnabled == true)
+    setToggleIfChanged(UI.returnByDeathToggle, settings.returnByDeathEnabled == true)
+    setToggleIfChanged(UI.healthBarsToggle, settings.healthBarsVisible == true)
+    setToggleIfChanged(UI.flingToggleRef, settings.flingActive == true)
+    setToggleIfChanged(UI.flingPowerSlider, settings.flingPower or flingPower)
+    setToggleIfChanged(UI.showUsernamesToggle, settings.namesVisible == true)
+    setToggleIfChanged(UI.antiFlingToggle, settings.antiFlingEnabled == true)
+    setToggleIfChanged(UI.antiVoidToggle, settings.antiVoidEnabled == true)
+    setToggleIfChanged(UI.flyToggle, settings.flying == true)
+    setToggleIfChanged(UI.flySpeedSlider, settings.flySpeed or flySpeed)
+    setToggleIfChanged(UI.noclipToggle, settings.noclipEnabled == true)
+    setToggleIfChanged(UI.shadowStepToggle, settings.blinkOn == true)
+    setToggleIfChanged(UI.shadowStepDistSlider, settings.blinkDist or blinkDist)
+    setToggleIfChanged(UI.heartAutoToggle, settings.heartAutoEnabled == true)
 
     for name, entry in pairs(keybindRegistry) do
         local value = settings[name]
@@ -1453,6 +1696,10 @@ local function applySettings(settings)
 end
 
 local function loadConfig(name)
+    if UI.unloaded then
+        return false
+    end
+
     local cleanName = sanitizeConfigName(name)
     if cleanName == "" then
         createNotification("Config", "Select a config first!")
@@ -1632,9 +1879,133 @@ if not keybindPressedConn then
     table.insert(connections, keybindPressedConn)
 end
 
+-- ===== INF STAMINA =====
+local function stopInfStamina()
+    infStaminaEnabled = false
+    if infStaminaConnection then
+        infStaminaConnection:Disconnect()
+        infStaminaConnection = nil
+    end
+end
+
+local function startInfStamina()
+    if not infStaminaEnabled or infStaminaConnection then
+        return
+    end
+
+    infStaminaConnection = RunService.RenderStepped:Connect(function()
+        local character = LocalPlayer.Character
+        if not character then return end
+
+        if character:GetAttribute("Stamina") ~= nil and character:GetAttribute("Stamina") < 100 then
+            character:SetAttribute("Stamina", 100)
+        end
+    end)
+end
+
+local function toggleInfStamina(state)
+    infStaminaEnabled = state
+    if state then
+        startInfStamina()
+    else
+        stopInfStamina()
+    end
+end
+
+-- ===== NO DODGE COOLDOWN =====
+if typeof(_G.__mariHubNoDodgeCooldownCleanup) == "function" then
+    pcall(_G.__mariHubNoDodgeCooldownCleanup)
+end
+
+local function stopNoDodgeCooldown()
+    noDodgeCooldownEnabled = false
+    if noDodgeCooldownModule
+        and noDodgeCooldownOriginal
+        and noDodgeCooldownModule.Evasive == noDodgeCooldownHook
+    then
+        noDodgeCooldownModule.Evasive = noDodgeCooldownOriginal
+    end
+    noDodgeCooldownModule = nil
+    noDodgeCooldownOriginal = nil
+    noDodgeCooldownHook = nil
+end
+
+local function toggleNoDodgeCooldown(state)
+    if not state then
+        stopNoDodgeCooldown()
+        return
+    end
+
+    if noDodgeCooldownEnabled and noDodgeCooldownHook then
+        return
+    end
+
+    local evasive = require(ReplicatedStorage.CombatSystemClient.Combat.Base.Evasive)
+    local original = evasive.Evasive
+    local setupValue = debug and debug.setupvalue or setupvalue
+    if typeof(original) ~= "function" or typeof(setupValue) ~= "function" then
+        createNotification("No Dodge Cooldown", "Unsupported executor debug library.")
+        if UI.noDodgeCooldownToggle then
+            task.defer(function()
+                UI.noDodgeCooldownToggle:Set(false)
+            end)
+        end
+        return
+    end
+
+    noDodgeCooldownEnabled = true
+    noDodgeCooldownModule = evasive
+    noDodgeCooldownOriginal = original
+    noDodgeCooldownHook = function(...)
+        if noDodgeCooldownEnabled then
+            local character = LocalPlayer.Character
+            if character then
+                character:SetAttribute("IFRAMECD", nil)
+                character:SetAttribute("EvasiveCooldownRemaining", nil)
+            end
+
+            -- Upvalue 4 is the Evasive module's local cooldown deadline.
+            pcall(setupValue, original, 4, 0)
+        end
+        return original(...)
+    end
+    evasive.Evasive = noDodgeCooldownHook
+end
+
+_G.__mariHubNoDodgeCooldownCleanup = stopNoDodgeCooldown
+
+-- ===== ANTI STUN =====
+local function stopAntiStun()
+    antiStunEnabled = false
+    if antiStunConnection then
+        antiStunConnection:Disconnect()
+        antiStunConnection = nil
+    end
+end
+
+local function toggleAntiStun(state)
+    stopAntiStun()
+    antiStunEnabled = state
+    if not state then
+        return
+    end
+
+    antiStunConnection = RunService.RenderStepped:Connect(function()
+        local character = LocalPlayer.Character
+        if not character or character:GetAttribute("Stunned") ~= true then
+            return
+        end
+
+        character:SetAttribute("Stunned", nil)
+        if character:GetAttribute("CantAnything") == true then
+            character:SetAttribute("CantAnything", nil)
+        end
+    end)
+end
+
 -- Combat Tab
 local CombatTab = Window:CreateTab("⚔️ Combat", 4483362458)
-autoParryToggle = createToggleWithKeybind(CombatTab, {
+UI.autoParryToggle = createToggleWithKeybind(CombatTab, {
     Name = "Auto Parry",
     CurrentValue = false,
     Callback = function(v)
@@ -1650,7 +2021,7 @@ autoParryToggle = createToggleWithKeybind(CombatTab, {
     end
 })
 
-pingCompensationToggle = CombatTab:CreateToggle({
+UI.pingCompensationToggle = CombatTab:CreateToggle({
     Name = "Ping Compensation",
     CurrentValue = false,
     Callback = function(v)
@@ -1658,7 +2029,7 @@ pingCompensationToggle = CombatTab:CreateToggle({
     end
 })
 
-autoFaceToggle = CombatTab:CreateToggle({
+UI.autoFaceToggle = CombatTab:CreateToggle({
     Name = "Auto Face",
     CurrentValue = false,
     Callback = function(v)
@@ -1669,7 +2040,39 @@ autoFaceToggle = CombatTab:CreateToggle({
     end
 })
 
-healthBarsToggle = CombatTab:CreateToggle({
+UI.infStaminaToggle = CombatTab:CreateToggle({
+    Name = "Inf Stamina",
+    CurrentValue = false,
+    Callback = function(v)
+        toggleInfStamina(v)
+    end
+})
+
+UI.noDodgeCooldownToggle = CombatTab:CreateToggle({
+    Name = "No Dodge Cooldown",
+    CurrentValue = false,
+    Callback = function(v)
+        toggleNoDodgeCooldown(v)
+    end
+})
+
+UI.antiStunToggle = CombatTab:CreateToggle({
+    Name = "Anti Stun",
+    CurrentValue = false,
+    Callback = function(v)
+        toggleAntiStun(v)
+    end
+})
+
+UI.espToggle = CombatTab:CreateToggle({
+    Name = "ESP",
+    CurrentValue = false,
+    Callback = function(v)
+        setEspEnabled(v)
+    end
+})
+
+UI.healthBarsToggle = CombatTab:CreateToggle({
     Name = "Show Healthbars",
     CurrentValue = false,
     Callback = function(v)
@@ -1682,7 +2085,7 @@ healthBarsToggle = CombatTab:CreateToggle({
 local FlingTab = Window:CreateTab("🚀 Fling", 4483362458)
 
 -- Toggle
-flingToggleRef = createToggleWithKeybind(FlingTab, {
+UI.flingToggleRef = createToggleWithKeybind(FlingTab, {
     Name = "Enable Fling",
     CurrentValue = false,
     Callback = function(v)
@@ -1693,7 +2096,7 @@ flingToggleRef = createToggleWithKeybind(FlingTab, {
 })
 
 -- Power Slider
-flingPowerSlider = FlingTab:CreateSlider({
+UI.flingPowerSlider = FlingTab:CreateSlider({
     Name = "Fling Power",
     Range = {0, 100},
     Increment = 1,
@@ -1704,11 +2107,11 @@ flingPowerSlider = FlingTab:CreateSlider({
 })
 
 -- Target Mode Status
-targetStatusLabel = FlingTab:CreateLabel("Target Mode: OFF")
+UI.targetStatusLabel = FlingTab:CreateLabel("Target Mode: OFF")
 updateTargetStatusLabel()
 
 -- Target Dropdown
-targetDropdown = FlingTab:CreateDropdown({
+UI.targetDropdown = FlingTab:CreateDropdown({
     Name = "Target Player",
     Options = {},
     CurrentOption = "",
@@ -1738,9 +2141,9 @@ targetDropdown = FlingTab:CreateDropdown({
             end
 
             task.defer(function()
-                if targetDropdown then
+                if UI.targetDropdown then
                     updatingDropdown = true
-                    targetDropdown:Set("")
+                    UI.targetDropdown:Set("")
                     task.defer(function()
                         updatingDropdown = false
                     end)
@@ -1761,7 +2164,7 @@ end
 
 -- SAFE refresh function with pcall
 local function refreshPlayerDropdown()
-    if not targetDropdown then return end
+    if not UI.targetDropdown then return end
     local playerNames = {}
     for _, p in pairs(Players:GetPlayers()) do
         if p ~= LocalPlayer then
@@ -1770,7 +2173,7 @@ local function refreshPlayerDropdown()
     end
     -- Use pcall to catch any errors from Refresh
     local success, err = pcall(function()
-        targetDropdown:Refresh(playerNames, true)
+        UI.targetDropdown:Refresh(playerNames, true)
     end)
     if not success then
         warn("Failed to refresh dropdown: " .. tostring(err))
@@ -1793,9 +2196,9 @@ table.insert(connections, Players.PlayerRemoving:Connect(function(plr)
 
         updateTargetStatusLabel()
 
-        if targetDropdown then
+        if UI.targetDropdown then
             updatingDropdown = true
-            targetDropdown:Set("")
+            UI.targetDropdown:Set("")
             task.defer(function()
                 updatingDropdown = false
             end)
@@ -1820,9 +2223,9 @@ FlingTab:CreateButton({
 
     setTarget(nil)
 
-if targetDropdown then
+if UI.targetDropdown then
     updatingDropdown = true
-    targetDropdown:Set("")
+    UI.targetDropdown:Set("")
     task.defer(function()
         updatingDropdown = false
     end)
@@ -1831,7 +2234,7 @@ end
 })
 
 -- Usernames Toggle
-showUsernamesToggle = createToggleWithKeybind(FlingTab, {
+UI.showUsernamesToggle = createToggleWithKeybind(FlingTab, {
     Name = "Show Usernames",
     CurrentValue = false,
     Callback = function(v)
@@ -1849,6 +2252,7 @@ FlingTab:CreateButton({
 FlingTab:CreateButton({
     Name = "Unload Hub",
     Callback = function()
+UI.unloaded = true
 ---disable shadow step
 blinkOn = false
 
@@ -1864,11 +2268,20 @@ pingCompensationEnabled = false
 pingSamplerActive = false
 autoParryPulse = autoParryPulse + 1
 autoFaceEnabled = false
+stopInfStamina()
+stopNoDodgeCooldown()
+stopAntiStun()
+_G.__mariHubNoDodgeCooldownCleanup = nil
 namesVisible = false
 nameTagsActive = false
 healthBarsVisible = false
 healthBarsActive = false
+espEnabled = false
+clearESP()
+jetpack.toggle(false)
+returnByDeath.toggle(false)
 stopAutoFacing()
+_G.__mariHubAutoFaceCleanup = nil
 if LocalPlayer.Character and LocalPlayer.Character:GetAttribute("Blocking") == true then
     Block.Unblock()
 end
@@ -1902,6 +2315,7 @@ end
         stopFlingLoop()
         stopFlingMonitor()
         restoreGhostedParts()
+        zeroCharacterVelocity(LocalPlayer.Character)
 
          --stop antifling
       if antiFlingConnection then
@@ -1925,6 +2339,13 @@ end
          --stop auto heartbeat
          _G.__heartAuto = false
 
+         --restore camera zoom
+         if infCamZoomEnabled then
+            LocalPlayer.CameraMaxZoomDistance = savedCamMaxZoom or 400
+            infCamZoomEnabled = false
+            savedCamMaxZoom = nil
+         end
+
 
         -- Disconnect stored connections
         for _, connection in ipairs(connections) do
@@ -1932,6 +2353,7 @@ end
                 connection:Disconnect()
             end
         end
+        table.clear(connections)
 
         -- Remove player overlays
         for _, plr in ipairs(Players:GetPlayers()) do
@@ -1984,10 +2406,10 @@ local function ensureHeartMonitor()
     if not _G.__heartAutoMonitor then
         _G.__heartAutoMonitor = true
         task.spawn(function()
-            while _G.__heartAuto do
+            while _G.__heartAuto and not UI.unloaded do
                 local cx, cy = getHeartCenter()
                 if cx then
-                    while _G.__heartAuto do
+                    while _G.__heartAuto and not UI.unloaded do
                         local cxx, cyy = getHeartCenter()
                         if not cxx then break end
                         VirtualInputManager:SendMouseButtonEvent(cxx, cyy, 0, true, game, 1)
@@ -2007,7 +2429,7 @@ end
 -- ===== MISC TAB =====
 local MiscTab = Window:CreateTab("🛠️ Misc", 4483362458)
 
-antiFlingToggle = MiscTab:CreateToggle({
+UI.antiFlingToggle = MiscTab:CreateToggle({
     Name = "Anti Fling",
     CurrentValue = false,
     Callback = function(v)
@@ -2015,7 +2437,7 @@ antiFlingToggle = MiscTab:CreateToggle({
     end
 })
 
-antiVoidToggle = MiscTab:CreateToggle({
+UI.antiVoidToggle = MiscTab:CreateToggle({
     Name = "Anti Void",
     CurrentValue = false,
     Callback = function(v)
@@ -2025,7 +2447,7 @@ antiVoidToggle = MiscTab:CreateToggle({
 
 _G.__heartAuto = false
 
-heartAutoToggle = MiscTab:CreateToggle({
+UI.heartAutoToggle = MiscTab:CreateToggle({
     Name = "Auto Heartbeat",
     CurrentValue = false,
     Callback = function(v)
@@ -2036,7 +2458,7 @@ heartAutoToggle = MiscTab:CreateToggle({
     end
 })
 
-flyToggle = createToggleWithKeybind(MiscTab, {
+UI.flyToggle = createToggleWithKeybind(MiscTab, {
     Name = "Fly",
     CurrentValue = false,
     Callback = function(v)
@@ -2048,7 +2470,7 @@ flyToggle = createToggleWithKeybind(MiscTab, {
     end
 })
 
-flySpeedSlider = MiscTab:CreateSlider({
+UI.flySpeedSlider = MiscTab:CreateSlider({
     Name = "Fly Speed",
     Range = {1,10},
     Increment = 1,
@@ -2058,7 +2480,7 @@ flySpeedSlider = MiscTab:CreateSlider({
     end
 })
 
-noclipToggle = createToggleWithKeybind(MiscTab, {
+UI.noclipToggle = createToggleWithKeybind(MiscTab, {
     Name = "Noclip",
     CurrentValue = false,
     Callback = function(v)
@@ -2066,7 +2488,7 @@ noclipToggle = createToggleWithKeybind(MiscTab, {
     end
 })
 
-shadowStepToggle = createToggleWithKeybind(MiscTab, {
+UI.shadowStepToggle = createToggleWithKeybind(MiscTab, {
      Name = "Enable Shadow step",
     CurrentValue = false,
     Callback = function(Value)
@@ -2074,7 +2496,7 @@ shadowStepToggle = createToggleWithKeybind(MiscTab, {
     end
 })
 
-shadowStepDistSlider = MiscTab:CreateSlider({
+UI.shadowStepDistSlider = MiscTab:CreateSlider({
     Name = "Shadow step Distance",
     Range = {10,120},
     Increment = 1,
@@ -2156,6 +2578,45 @@ MiscTab:CreateButton({
     end
 })
 
+-- ===== FUN TAB =====
+local FunTab = Window:CreateTab("🎉 Fun", 4483362458)
+
+UI.jetpackToggle = FunTab:CreateToggle({
+    Name = "Jetpack",
+    CurrentValue = false,
+    Callback = function(v)
+        jetpack.toggle(v)
+    end
+})
+
+UI.returnByDeathToggle = FunTab:CreateToggle({
+    Name = "Return by Death",
+    CurrentValue = false,
+    Callback = function(v)
+        returnByDeath.toggle(v)
+    end
+})
+
+UI.infCamZoomToggle = FunTab:CreateToggle({
+    Name = "Inf Cam Zoom",
+    CurrentValue = false,
+    Callback = function(v)
+        infCamZoomEnabled = v
+
+        if v then
+            savedCamMaxZoom = LocalPlayer.CameraMaxZoomDistance
+            LocalPlayer.CameraMaxZoomDistance = "inf"
+            createNotification("Inf Cam Zoom", "Enabled (infinite max zoom)")
+        else
+            if savedCamMaxZoom ~= nil then
+                LocalPlayer.CameraMaxZoomDistance = savedCamMaxZoom
+                savedCamMaxZoom = nil
+            end
+            createNotification("Inf Cam Zoom", "Disabled (restored normal zoom)")
+        end
+    end
+})
+
 -- ===== CONFIG TAB =====
 local ConfigTab = Window:CreateTab("⚙️ Config", 4483362458)
 
@@ -2164,18 +2625,18 @@ ConfigTab:CreateInput({
     PlaceholderText = "Name for your config...",
     RemoveTextAfterFocusLost = false,
     Callback = function(text)
-        configNameInput = text
+        UI.configNameInput = text
     end
 })
 
 ConfigTab:CreateButton({
     Name = "Save Config",
     Callback = function()
-        saveConfig(configNameInput)
+        saveConfig(UI.configNameInput)
     end
 })
 
-configDropdown = ConfigTab:CreateDropdown({
+UI.configDropdown = ConfigTab:CreateDropdown({
     Name = "Select Config",
     Options = {},
     CurrentOption = "",
@@ -2183,18 +2644,18 @@ configDropdown = ConfigTab:CreateDropdown({
         if typeof(option) == "table" then
             option = option[1]
         end
-        selectedConfig = option or nil
+        UI.selectedConfig = option or nil
     end
 })
 
 ConfigTab:CreateButton({
     Name = "Load Config",
     Callback = function()
-        loadConfig(selectedConfig)
+        loadConfig(UI.selectedConfig)
     end
 })
 
-autoLoadDropdown = ConfigTab:CreateDropdown({
+UI.autoLoadDropdown = ConfigTab:CreateDropdown({
     Name = "Auto Load Config",
     Options = {},
     CurrentOption = "",
@@ -2202,21 +2663,21 @@ autoLoadDropdown = ConfigTab:CreateDropdown({
         if typeof(option) == "table" then
             option = option[1]
         end
-        autoLoadSelected = option or nil
+        UI.autoLoadSelected = option or nil
     end
 })
 
 ConfigTab:CreateButton({
     Name = "Auto Load Save",
     Callback = function()
-        saveAutoLoad(autoLoadSelected)
+        saveAutoLoad(UI.autoLoadSelected)
     end
 })
 
 ConfigTab:CreateButton({
     Name = "Delete Config",
     Callback = function()
-        deleteConfig(selectedConfig)
+        deleteConfig(UI.selectedConfig)
     end
 })
 
@@ -2388,6 +2849,18 @@ local function applyAutoParry()
     end)
 end
 
+local function isEnemyInFront(myRoot, enemyRoot)
+    local toEnemy = enemyRoot.Position - myRoot.Position
+    toEnemy = Vector3.new(toEnemy.X, 0, toEnemy.Z)
+    local facing = Vector3.new(myRoot.CFrame.LookVector.X, 0, myRoot.CFrame.LookVector.Z)
+
+    if toEnemy.Magnitude < 0.1 or facing.Magnitude < 0.1 then
+        return true
+    end
+
+    return toEnemy.Unit:Dot(facing.Unit) > 0
+end
+
 local function onEnemyAnimation(character, track)
     if not autoParryEnabled then
         return
@@ -2407,6 +2880,10 @@ local function onEnemyAnimation(character, track)
         return
     end
 
+    if not autoFaceEnabled and not isEnemyInFront(myRoot, enemyRoot) then
+        return
+    end
+
     if myCharacter:GetAttribute("Equip") ~= true then
         return
     end
@@ -2422,7 +2899,7 @@ local function onEnemyAnimation(character, track)
         myCharacter = LocalPlayer.Character
         myRoot = myCharacter and myCharacter:FindFirstChild("HumanoidRootPart")
         enemyRoot = character:FindFirstChild("HumanoidRootPart")
-        if myRoot and enemyRoot and (myRoot.Position - enemyRoot.Position).Magnitude <= AUTO_PARRY_RANGE then
+        if myRoot and enemyRoot and (myRoot.Position - enemyRoot.Position).Magnitude <= AUTO_PARRY_RANGE and (autoFaceEnabled or isEnemyInFront(myRoot, enemyRoot)) then
             holdAutoFacing(myCharacter, enemyRoot, AUTO_PARRY_HOLD + 0.08)
             applyAutoParry()
         end
@@ -2594,9 +3071,13 @@ KeyTab:CreateButton({
         Title = "Success",
         Content = "Key accepted! Saved for 15 hours.",
         Duration = 3,
-    })
+            })
 
             task.wait(1)
+
+            pcall(function()
+                Rayfield:Destroy()
+            end)
 
             LoadHub()
         else
