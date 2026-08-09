@@ -1469,7 +1469,7 @@ function returnByDeath.teleportCharacter(character)
 
             local seated = humanoid.Sit or humanoid.SeatPart ~= nil
             wasSeated = wasSeated or seated
-            character:PivotTo(CFrame.new(deathPosition) * character:GetPivot().Rotation)
+            character:PivotTo(CFrame.new(deathPosition + Vector3.new(0, 3, 0)) * character:GetPivot().Rotation)
 
             -- Keep the destination through the chair state, then release on Space.
             if wasSeated and not seated then
