@@ -632,6 +632,7 @@ local function toggleFling(newState)
     end
 
     playSound()
+    createNotification("Fling", flingActive and "Enabled" or "Disabled")
 
     if UI.flingToggleRef then
         UI.flingToggleRef:Set(flingActive)
@@ -1401,7 +1402,29 @@ function returnByDeath.wireCharacter(character)
     local function captureDeathPosition()
         local root = character:FindFirstChild("HumanoidRootPart")
         if returnByDeath.enabled and root then
-            returnByDeath.deathPosition = root.Position
+            local position = root.Position
+            local voidLimit = originalFallenPartsDestroyHeight
+            if voidLimit ~= voidLimit then
+                voidLimit = -500
+            end
+
+            local rayParams = RaycastParams.new()
+            rayParams.FilterType = Enum.RaycastFilterType.Exclude
+            rayParams.FilterDescendantsInstances = {character}
+            local hasGroundBelow = workspace:Raycast(
+                position,
+                Vector3.new(0, -250, 0),
+                rayParams
+            ) ~= nil
+
+            local belowDestroyBoundary = position.Y <= voidLimit + 50
+            local strandedBelowMap = position.Y <= voidLimit + 200 and not hasGroundBelow
+            if belowDestroyBoundary or strandedBelowMap then
+                returnByDeath.deathPosition = nil
+                return
+            end
+
+            returnByDeath.deathPosition = position
         end
     end
 
