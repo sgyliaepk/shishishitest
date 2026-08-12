@@ -46,12 +46,1363 @@ local function getBypassMessage(userId)
     return SPECIAL_BYPASS_MESSAGES[userId] or GROUP_BYPASS_MESSAGE
 end
 
+-- Self-contained UI layer. It intentionally mirrors the small Rayfield API used
+-- below so feature callbacks and config behavior remain independent of the UI.
+local function createMariUI()
+    if typeof(_G.__MariHubUICleanup) == "function" then
+        pcall(_G.__MariHubUICleanup)
+    end
+
+    local TweenService = game:GetService("TweenService")
+    local UserInputService = game:GetService("UserInputService")
+    local Players = game:GetService("Players")
+
+    local palette = {
+        background = Color3.fromRGB(9, 11, 16),
+        sidebar = Color3.fromRGB(12, 15, 21),
+        surface = Color3.fromRGB(18, 22, 30),
+        surfaceHover = Color3.fromRGB(23, 28, 38),
+        surfaceActive = Color3.fromRGB(28, 34, 46),
+        border = Color3.fromRGB(42, 49, 64),
+        text = Color3.fromRGB(239, 242, 248),
+        muted = Color3.fromRGB(143, 152, 169),
+        accent = Color3.fromRGB(218, 82, 138),
+        accentSoft = Color3.fromRGB(91, 42, 67),
+        success = Color3.fromRGB(76, 205, 139),
+        danger = Color3.fromRGB(238, 91, 103),
+    }
+
+    local descriptions = {
+        ["Auto Parry"] = "Automatically blocks nearby attacks.",
+        ["Ping Compensation"] = "Adjusts parry timing for your ping.",
+        ["Auto Face"] = "Faces attackers during auto parry.",
+        ["Inf Stamina"] = "Keeps your stamina full.",
+        ["No Dodge Cooldown"] = "Removes the dodge cooldown.",
+        ["Anti Stun"] = "Prevents you from being stunned.",
+        ["ESP"] = "Shows players through walls.",
+        ["ESP Distance"] = "Changes how far ESP can be seen.",
+        ["show hp and m2 cooldown"] = "Shows your HP and M2 cooldown.",
+        ["Show Healthbars"] = "Shows player health bars.",
+        ["Enable Fling"] = "Enables player fling.",
+        ["Fling Power"] = "Controls the velocity used by fling.",
+        ["Target Player"] = "tp to player and fling.",
+        ["Fling Duration"] = "Controls how long the selected-target fling runs.",
+        ["Fling Selected"] = "Flings the selected target at maximum power.",
+        ["Show Usernames"] = "Shows player usernames.",
+        ["Rejoin Server"] = "Reconnects to the current server instance.",
+        ["Unload Hub"] = "Disables features, restores changed state, and removes the UI.",
+        ["Anti Fling"] = "Prevents other players from flinging you.",
+        ["Anti Void"] = "Kills you when falling into the void.",
+        ["Auto Heartbeat"] = "Automatically completes the heartbeat.",
+        ["Fly"] = "Fly with WASD in the camera direction.",
+        ["Fly Speed"] = "Controls flight input speed.",
+        ["Walkspeed"] = "Change walkspeed.",
+        ["Walk Speed"] = "Changes your walking speed.",
+        ["Noclip"] = "Lets you move through objects.",
+        ["Enable Shadow step"] = "Press Q to dash forward.",
+        ["Shadow step Distance"] = "Controls the distance of each shadow step.",
+        ["Spectate Player"] = "Enter a username or unique username prefix.",
+        ["Start Spectating"] = "Moves your camera to the entered player.",
+        ["Stop Spectating"] = "Restores the camera to your character.",
+        ["Teleport To Player"] = "Enter a username or unique username prefix.",
+        ["Teleport"] = "Moves your character behind the entered player.",
+        ["Force Reset"] = "Launches your character to force a reset.",
+        ["Jetpack"] = "Hold Space to fly upward.",
+        ["Return by Death"] = "Returns you to where you died.",
+        ["Auto Perfect (Music)"] = "Automatically hits music notes.",
+        ["Auto Green (Basketball)"] = "Releases basketball shots in the green window.",
+        ["Auto Play Piano"] = "Enables automatic piano song playback.",
+        ["Piano Song"] = "Select a song for the 61-key piano.",
+        ["Play Song"] = "Starts the selected piano song.",
+        ["Inf Cam Zoom"] = "Enables unlimited camera zoom.",
+        ["Config Name"] = "Choose a name for a reusable settings profile.",
+        ["Save Config"] = "Writes the current controls to a named profile.",
+        ["Select Config"] = "Select a saved profile to load or delete.",
+        ["Load Config"] = "Applies every setting from the selected profile.",
+        ["Auto Load Config"] = "Select the profile applied automatically at startup.",
+        ["Auto Load Save"] = "Stores the selected profile as the startup profile.",
+        ["Delete Config"] = "Permanently removes the selected profile.",
+        ["Color Preset"] = "Changes the UI accent color.",
+        ["UI Toggle Keybind"] = "Changes the key used to show or hide the hub.",
+        ["Show Minimize Star"] = "Shows the restore star when the hub is minimized.",
+        ["UI Animations"] = "Enables UI movement and fade effects.",
+        ["UI Scale"] = "Changes the size of the hub.",
+        ["Reset UI Position"] = "Moves the hub back to the center.",
+        ["Verify"] = "Validates the entered access key.",
+        ["🔑 Get Key"] = "Copies link to clipboard.",
+    }
+
+    local api = {windows = {}, connections = {}, destroyed = false, animationsEnabled = true}
+
+    local function new(className, properties)
+        local instance = Instance.new(className)
+        for property, value in pairs(properties or {}) do
+            if property ~= "Parent" then
+                instance[property] = value
+            end
+        end
+        if properties and properties.Parent then
+            instance.Parent = properties.Parent
+        end
+        return instance
+    end
+
+    local function corner(parent, radius)
+        return new("UICorner", {CornerRadius = UDim.new(0, radius or 8), Parent = parent})
+    end
+
+    local function stroke(parent, color, transparency)
+        return new("UIStroke", {
+            Color = color or palette.border,
+            Transparency = transparency or 0,
+            Thickness = 1,
+            Parent = parent,
+        })
+    end
+
+    local function tween(instance, duration, properties, easingStyle, easingDirection)
+        if not api.animationsEnabled then
+            for property, value in pairs(properties) do
+                instance[property] = value
+            end
+            return nil
+        end
+        local animation = TweenService:Create(
+            instance,
+            TweenInfo.new(
+                duration or 0.18,
+                easingStyle or Enum.EasingStyle.Quart,
+                easingDirection or Enum.EasingDirection.Out
+            ),
+            properties
+        )
+        animation:Play()
+        return animation
+    end
+
+    local function connect(signal, callback, bucket)
+        local connection = signal:Connect(callback)
+        table.insert(bucket or api.connections, connection)
+        return connection
+    end
+
+    local function invoke(callback, ...)
+        if typeof(callback) ~= "function" then
+            return
+        end
+        local ok, err = pcall(callback, ...)
+        if not ok then
+            warn("MARI-HUB UI callback failed: " .. tostring(err))
+        end
+    end
+
+    local function setHover(button, target, normalColor, hoverColor)
+        local normalUsesAccent = normalColor == palette.accent
+        local normalUsesAccentSoft = normalColor == palette.accentSoft
+        local hoverUsesAccent = hoverColor == palette.accent
+        local hoverUsesAccentSoft = hoverColor == palette.accentSoft
+        local function resolveColor(color, usesAccent, usesAccentSoft)
+            if usesAccent then return palette.accent end
+            if usesAccentSoft then return palette.accentSoft end
+            return color
+        end
+        connect(button.MouseEnter, function()
+            tween(target, 0.14, {
+                BackgroundColor3 = resolveColor(hoverColor, hoverUsesAccent, hoverUsesAccentSoft),
+            })
+        end)
+        connect(button.MouseLeave, function()
+            tween(target, 0.14, {
+                BackgroundColor3 = resolveColor(normalColor, normalUsesAccent, normalUsesAccentSoft),
+            })
+        end)
+    end
+
+    local function getParent()
+        local parent = game:GetService("CoreGui")
+        if typeof(gethui) == "function" then
+            local ok, result = pcall(gethui)
+            if ok and result then
+                parent = result
+            end
+        end
+        return parent
+    end
+
+    function api:CreateWindow(options)
+        options = options or {}
+        local window = {
+            tabs = {},
+            connections = {},
+            selectedTab = nil,
+            hidden = false,
+            restoreEnabled = true,
+            toggleKeybind = Enum.KeyCode.RightShift,
+            userScale = 1,
+            accentHistory = {palette.accent},
+            softAccentHistory = {palette.accentSoft},
+            themeRefreshers = {},
+        }
+        table.insert(self.windows, window)
+
+        local gui = new("ScreenGui", {
+            Name = "MariHubModernUI_" .. tostring(math.floor(os.clock() * 1000)),
+            ResetOnSpawn = false,
+            IgnoreGuiInset = true,
+            ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+            DisplayOrder = 999999,
+            Parent = getParent(),
+        })
+        window.gui = gui
+
+        local shade = new("Frame", {
+            Name = "Shade",
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromOffset(780, 520),
+            BackgroundColor3 = Color3.new(0, 0, 0),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            Parent = gui,
+        })
+        corner(shade, 18)
+
+        local shell = new("CanvasGroup", {
+            Name = "Window",
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.fromScale(0.5, 0.5),
+            Size = UDim2.fromOffset(760, 500),
+            BackgroundColor3 = palette.background,
+            GroupTransparency = 1,
+            BorderSizePixel = 0,
+            ClipsDescendants = true,
+            Parent = gui,
+        })
+        window.shell = shell
+        corner(shell, 16)
+        stroke(shell, palette.border, 0.1)
+
+        local baseScale = 0.92
+        local scale = new("UIScale", {Scale = baseScale, Parent = shell})
+        local shadeScale = new("UIScale", {Scale = 0.92, Parent = shade})
+        local function updateScale()
+            local camera = workspace.CurrentCamera
+            local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+            local responsiveScale = math.clamp(math.min((viewport.X - 24) / 780, (viewport.Y - 24) / 520), 0.35, 1)
+            local value = math.clamp(responsiveScale * window.userScale, 0.3, 1.2)
+            baseScale = value
+            if not window.transitioning then
+                scale.Scale = value
+            end
+            shadeScale.Scale = value
+        end
+        updateScale()
+        if workspace.CurrentCamera then
+            connect(workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"), updateScale, window.connections)
+        end
+
+        local sidebar = new("Frame", {
+            Name = "Sidebar",
+            Size = UDim2.new(0, 190, 1, 0),
+            BackgroundColor3 = palette.sidebar,
+            BorderSizePixel = 0,
+            Parent = shell,
+        })
+        new("Frame", {
+            Position = UDim2.new(1, -1, 0, 0),
+            Size = UDim2.new(0, 1, 1, 0),
+            BackgroundColor3 = palette.border,
+            BackgroundTransparency = 0.35,
+            BorderSizePixel = 0,
+            Parent = sidebar,
+        })
+
+        local brand = new("TextLabel", {
+            Position = UDim2.fromOffset(18, 17),
+            Size = UDim2.new(1, -36, 0, 24),
+            BackgroundTransparency = 1,
+            Font = Enum.Font.GothamBold,
+            Text = "MARI-HUB",
+            TextColor3 = palette.text,
+            TextSize = 18,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = sidebar,
+        })
+        new("TextLabel", {
+            Position = UDim2.fromOffset(18, 40),
+            Size = UDim2.new(1, -36, 0, 18),
+            BackgroundTransparency = 1,
+            Font = Enum.Font.Gotham,
+            Text = options.LoadingSubtitle or "Gakuran utility suite",
+            TextColor3 = palette.muted,
+            TextSize = 11,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = sidebar,
+        })
+        local brandLine = new("Frame", {
+            Position = UDim2.fromOffset(18, 68),
+            Size = UDim2.fromOffset(32, 3),
+            BackgroundColor3 = palette.accent,
+            BorderSizePixel = 0,
+            Parent = sidebar,
+        })
+        corner(brandLine, 2)
+
+        local nav = new("ScrollingFrame", {
+            Name = "Navigation",
+            Position = UDim2.fromOffset(10, 88),
+            Size = UDim2.new(1, -20, 1, -142),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            ScrollBarThickness = 0,
+            CanvasSize = UDim2.new(),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            Parent = sidebar,
+        })
+        new("UIListLayout", {
+            Padding = UDim.new(0, 6),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+            Parent = nav,
+        })
+
+        local profile = new("Frame", {
+            Position = UDim2.new(0, 10, 1, -44),
+            Size = UDim2.new(1, -20, 0, 34),
+            BackgroundColor3 = palette.surface,
+            BorderSizePixel = 0,
+            Parent = sidebar,
+        })
+        corner(profile, 9)
+        local player = Players.LocalPlayer
+        new("TextLabel", {
+            Position = UDim2.fromOffset(10, 0),
+            Size = UDim2.new(1, -20, 1, 0),
+            BackgroundTransparency = 1,
+            Font = Enum.Font.GothamMedium,
+            Text = (player and ("@" .. player.Name) or "Local player") .. "  |  RightShift",
+            TextColor3 = palette.muted,
+            TextSize = 11,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = profile,
+        })
+
+        local header = new("Frame", {
+            Position = UDim2.fromOffset(190, 0),
+            Size = UDim2.new(1, -190, 0, 76),
+            BackgroundTransparency = 1,
+            Parent = shell,
+        })
+        local pageTitle = new("TextLabel", {
+            Position = UDim2.fromOffset(24, 14),
+            Size = UDim2.new(1, -150, 0, 25),
+            BackgroundTransparency = 1,
+            Font = Enum.Font.GothamBold,
+            Text = options.Name or "MARI-HUB",
+            TextColor3 = palette.text,
+            TextSize = 19,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = header,
+        })
+        window.pageTitle = pageTitle
+
+        local minimize = new("TextButton", {
+            AnchorPoint = Vector2.new(1, 0),
+            Position = UDim2.new(1, -18, 0, 16),
+            Size = UDim2.fromOffset(32, 28),
+            BackgroundColor3 = palette.surface,
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Font = Enum.Font.GothamBold,
+            Text = "-",
+            TextColor3 = palette.muted,
+            TextSize = 17,
+            Parent = header,
+        })
+        corner(minimize, 8)
+        setHover(minimize, minimize, palette.surface, palette.surfaceHover)
+
+        local restoreButton = new("TextButton", {
+            Name = "RestoreHub",
+            AnchorPoint = Vector2.new(0, 0.5),
+            Position = UDim2.new(0, 22, 0.5, 0),
+            Size = UDim2.fromOffset(48, 48),
+            BackgroundColor3 = palette.accent,
+            BackgroundTransparency = 0,
+            BorderSizePixel = 0,
+            AutoButtonColor = false,
+            Font = Enum.Font.GothamBold,
+            Text = "",
+            TextColor3 = Color3.fromRGB(10, 11, 15),
+            Visible = false,
+            ZIndex = 20,
+            Parent = gui,
+        })
+        corner(restoreButton, 24)
+        stroke(restoreButton, Color3.fromRGB(255, 151, 194), 0.12)
+        new("TextLabel", {
+            Position = UDim2.fromOffset(-1, -1),
+            Size = UDim2.fromScale(1, 1),
+            BackgroundTransparency = 1,
+            Font = Enum.Font.GothamBold,
+            Text = "★",
+            TextColor3 = Color3.fromRGB(10, 11, 15),
+            TextSize = 24,
+            TextXAlignment = Enum.TextXAlignment.Center,
+            TextYAlignment = Enum.TextYAlignment.Center,
+            ZIndex = 21,
+            Parent = restoreButton,
+        })
+        local restoreScale = new("UIScale", {Scale = 0, Parent = restoreButton})
+        connect(restoreButton.MouseEnter, function()
+            if restoreButton.Visible then
+                tween(restoreScale, 0.14, {Scale = 1.08})
+            end
+        end, window.connections)
+        connect(restoreButton.MouseLeave, function()
+            if restoreButton.Visible then
+                tween(restoreScale, 0.14, {Scale = 1})
+            end
+        end, window.connections)
+
+        local restoreDragging = false
+        local restoreMoved = false
+        local restoreDragStart
+        local restoreStartPosition
+        connect(restoreButton.InputBegan, function(input)
+            if not restoreButton.Visible then return end
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch
+            then
+                restoreDragging = true
+                restoreMoved = false
+                restoreDragStart = input.Position
+                restoreStartPosition = restoreButton.Position
+                tween(restoreScale, 0.12, {Scale = 0.94}, Enum.EasingStyle.Sine)
+            end
+        end, window.connections)
+        connect(UserInputService.InputChanged, function(input)
+            if not restoreDragging then return end
+            if input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch
+            then
+                local delta = input.Position - restoreDragStart
+                if Vector2.new(delta.X, delta.Y).Magnitude > 4 then
+                    restoreMoved = true
+                end
+                restoreButton.Position = restoreStartPosition + UDim2.fromOffset(delta.X, delta.Y)
+            end
+        end, window.connections)
+        connect(UserInputService.InputEnded, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch
+            then
+                if restoreDragging then
+                    restoreDragging = false
+                    tween(restoreScale, 0.18, {Scale = 1}, Enum.EasingStyle.Sine)
+                end
+            end
+        end, window.connections)
+
+        local searchBox = new("TextBox", {
+            Position = UDim2.fromOffset(24, 46),
+            Size = UDim2.new(1, -48, 0, 34),
+            BackgroundColor3 = palette.surface,
+            BorderSizePixel = 0,
+            ClearTextOnFocus = false,
+            Font = Enum.Font.Gotham,
+            PlaceholderText = "Search this page...",
+            PlaceholderColor3 = Color3.fromRGB(103, 112, 129),
+            Text = "",
+            TextColor3 = palette.text,
+            TextSize = 12,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = header,
+        })
+        corner(searchBox, 9)
+        stroke(searchBox, palette.border, 0.3)
+        new("UIPadding", {PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 12), Parent = searchBox})
+        window.searchBox = searchBox
+
+        local pages = new("Frame", {
+            Name = "Pages",
+            Position = UDim2.fromOffset(190, 88),
+            Size = UDim2.new(1, -190, 1, -100),
+            BackgroundTransparency = 1,
+            ClipsDescendants = true,
+            Parent = shell,
+        })
+        window.pages = pages
+
+        local dragging = false
+        local dragStart
+        local startPosition
+        connect(header.InputBegan, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = true
+                dragStart = input.Position
+                startPosition = shell.Position
+            end
+        end, window.connections)
+        connect(UserInputService.InputChanged, function(input)
+            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                local delta = input.Position - dragStart
+                shell.Position = startPosition + UDim2.fromOffset(delta.X / scale.Scale, delta.Y / scale.Scale)
+                shade.Position = shell.Position
+            end
+        end, window.connections)
+        connect(UserInputService.InputEnded, function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                if dragging then
+                    window.restingPosition = shell.Position
+                end
+                dragging = false
+            end
+        end, window.connections)
+
+        function window:SetHidden(state)
+            state = state == true
+            if self.hidden == state or self.transitioning then
+                return
+            end
+
+            self.hidden = state
+            self.transitioning = true
+            self.restingPosition = self.restingPosition or shell.Position
+            local loweredPosition = self.restingPosition + UDim2.fromOffset(0, 18)
+            local closeDuration = api.animationsEnabled and 0.22 or 0
+            local starDuration = api.animationsEnabled and 0.22 or 0
+            local restoreDuration = api.animationsEnabled and 0.12 or 0
+            local openDuration = api.animationsEnabled and 0.28 or 0
+
+            if state then
+                tween(shell, closeDuration, {
+                    GroupTransparency = 1,
+                    Position = loweredPosition,
+                }, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+                tween(shade, closeDuration, {
+                    BackgroundTransparency = 1,
+                    Position = loweredPosition,
+                }, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+                task.delay(closeDuration, function()
+                    if not gui.Parent or not self.hidden then return end
+                    shell.Visible = false
+                    shade.Visible = false
+                    shell.Position = self.restingPosition
+                    shade.Position = self.restingPosition
+                    restoreButton.Visible = self.restoreEnabled
+                    if self.restoreEnabled then
+                        restoreScale.Scale = 0
+                        tween(restoreScale, starDuration, {Scale = 1}, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+                    end
+                    self.transitioning = false
+                end)
+                return
+            end
+
+            restoreDragging = false
+            tween(restoreScale, restoreDuration, {Scale = 0}, Enum.EasingStyle.Quint, Enum.EasingDirection.In)
+            task.delay(restoreDuration, function()
+                if restoreButton.Parent then
+                    restoreButton.Visible = false
+                end
+            end)
+
+            shell.Visible = true
+            shade.Visible = true
+            shell.Position = loweredPosition
+            shade.Position = loweredPosition
+            shell.GroupTransparency = 1
+            shade.BackgroundTransparency = 1
+            scale.Scale = baseScale
+            tween(shell, openDuration, {
+                GroupTransparency = 0,
+                Position = self.restingPosition,
+            }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+            tween(shade, openDuration, {
+                BackgroundTransparency = 1,
+                Position = self.restingPosition,
+            }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+            task.delay(openDuration, function()
+                if gui.Parent then
+                    self.transitioning = false
+                end
+            end)
+        end
+        connect(minimize.Activated, function()
+            window:SetHidden(true)
+        end, window.connections)
+        connect(restoreButton.Activated, function()
+            if not restoreMoved then
+                tween(restoreScale, 0.08, {Scale = 0.84}, Enum.EasingStyle.Sine)
+                window:SetHidden(false)
+            end
+        end, window.connections)
+        connect(UserInputService.InputBegan, function(input, processed)
+            if not processed and input.KeyCode == window.toggleKeybind then
+                window:SetHidden(not window.hidden)
+            end
+        end, window.connections)
+
+        function window:SetAccent(color)
+            if typeof(color) ~= "Color3" then return end
+            local previousAccent = palette.accent
+            local previousSoft = palette.accentSoft
+            local nextSoft = palette.surface:Lerp(color, 0.34)
+
+            local function remember(history, value)
+                for _, savedColor in ipairs(history) do
+                    if savedColor == value then return end
+                end
+                table.insert(history, value)
+            end
+            local function contains(history, value)
+                for _, savedColor in ipairs(history) do
+                    if savedColor == value then return true end
+                end
+                return false
+            end
+            remember(self.accentHistory, previousAccent)
+            remember(self.accentHistory, color)
+            remember(self.softAccentHistory, previousSoft)
+            remember(self.softAccentHistory, nextSoft)
+
+            palette.accent = color
+            palette.accentSoft = nextSoft
+
+            local function applyTheme()
+                if not gui.Parent then return end
+                for _, descendant in ipairs(gui:GetDescendants()) do
+                    if descendant:IsA("GuiObject") then
+                        if contains(self.accentHistory, descendant.BackgroundColor3) then
+                            descendant.BackgroundColor3 = color
+                        elseif contains(self.softAccentHistory, descendant.BackgroundColor3) then
+                            descendant.BackgroundColor3 = nextSoft
+                        end
+                    end
+                    if descendant:IsA("TextLabel")
+                        or descendant:IsA("TextButton")
+                        or descendant:IsA("TextBox")
+                    then
+                        if contains(self.accentHistory, descendant.TextColor3) then
+                            descendant.TextColor3 = color
+                        end
+                    end
+                    if descendant:IsA("ScrollingFrame")
+                        and contains(self.accentHistory, descendant.ScrollBarImageColor3)
+                    then
+                        descendant.ScrollBarImageColor3 = color
+                    elseif descendant:IsA("UIStroke")
+                        and contains(self.accentHistory, descendant.Color)
+                    then
+                        descendant.Color = color
+                    end
+                end
+                for _, refresh in ipairs(self.themeRefreshers) do
+                    pcall(refresh, color, nextSoft)
+                end
+            end
+
+            applyTheme()
+            task.delay(0.24, function()
+                if palette.accent == color then
+                    applyTheme()
+                end
+            end)
+        end
+
+        function window:SetToggleKeybind(keyName)
+            local key = typeof(keyName) == "EnumItem" and keyName or Enum.KeyCode[tostring(keyName)]
+            if key then
+                self.toggleKeybind = key
+            end
+        end
+
+        function window:SetRestoreEnabled(state)
+            self.restoreEnabled = state == true
+            if not self.restoreEnabled then
+                restoreButton.Visible = false
+            elseif self.hidden and not self.transitioning then
+                restoreButton.Visible = true
+                restoreScale.Scale = 1
+            end
+        end
+
+        function window:SetAnimationsEnabled(state)
+            api.animationsEnabled = state == true
+        end
+
+        function window:SetUIScale(percent)
+            self.userScale = math.clamp((tonumber(percent) or 100) / 100, 0.7, 1.2)
+            updateScale()
+        end
+
+        function window:ResetPosition()
+            self.restingPosition = UDim2.fromScale(0.5, 0.5)
+            restoreButton.Position = UDim2.new(0, 22, 0.5, 0)
+            if not self.hidden then
+                tween(shell, 0.22, {Position = self.restingPosition})
+                tween(shade, 0.22, {Position = self.restingPosition})
+            end
+        end
+
+        function window:GetSavedPositions()
+            local hubPosition = self.restingPosition or shell.Position
+            local starPosition = restoreButton.Position
+            return {
+                hub = {
+                    xScale = hubPosition.X.Scale,
+                    xOffset = hubPosition.X.Offset,
+                    yScale = hubPosition.Y.Scale,
+                    yOffset = hubPosition.Y.Offset,
+                },
+                star = {
+                    xScale = starPosition.X.Scale,
+                    xOffset = starPosition.X.Offset,
+                    yScale = starPosition.Y.Scale,
+                    yOffset = starPosition.Y.Offset,
+                },
+            }
+        end
+
+        function window:SetSavedPositions(positions)
+            if type(positions) ~= "table" then return end
+
+            local function readPosition(value)
+                if type(value) ~= "table" then return nil end
+                local xScale = tonumber(value.xScale)
+                local xOffset = tonumber(value.xOffset)
+                local yScale = tonumber(value.yScale)
+                local yOffset = tonumber(value.yOffset)
+                if not xScale or not xOffset or not yScale or not yOffset then
+                    return nil
+                end
+                return UDim2.new(xScale, xOffset, yScale, yOffset)
+            end
+
+            local hubPosition = readPosition(positions.hub)
+            local starPosition = readPosition(positions.star)
+            if hubPosition then
+                self.restingPosition = hubPosition
+                shell.Position = hubPosition
+                shade.Position = hubPosition
+            end
+            if starPosition then
+                restoreButton.Position = starPosition
+            end
+        end
+
+        local function filterCurrentPage()
+            local tab = window.selectedTab
+            if not tab then return end
+            local query = searchBox.Text:lower():gsub("^%s+", ""):gsub("%s+$", "")
+            for _, child in ipairs(tab.page:GetChildren()) do
+                if child:IsA("GuiObject") and child:GetAttribute("SearchName") then
+                    child.Visible = query == "" or child:GetAttribute("SearchName"):find(query, 1, true) ~= nil
+                end
+            end
+        end
+        connect(searchBox:GetPropertyChangedSignal("Text"), filterCurrentPage, window.connections)
+
+        function window:CreateTab(name)
+            local tab = {name = tostring(name), window = window, controls = {}}
+            table.insert(window.tabs, tab)
+
+            local navButton = new("TextButton", {
+                Name = tab.name,
+                Size = UDim2.new(1, 0, 0, 38),
+                BackgroundColor3 = palette.sidebar,
+                BorderSizePixel = 0,
+                AutoButtonColor = false,
+                Font = Enum.Font.GothamMedium,
+                Text = "  " .. tab.name,
+                TextColor3 = palette.muted,
+                TextSize = 12,
+                TextTruncate = Enum.TextTruncate.AtEnd,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = nav,
+            })
+            corner(navButton, 9)
+            tab.navButton = navButton
+
+            local indicator = new("Frame", {
+                Position = UDim2.fromOffset(3, 9),
+                Size = UDim2.fromOffset(3, 20),
+                BackgroundColor3 = palette.accent,
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                Parent = navButton,
+            })
+            corner(indicator, 2)
+            tab.indicator = indicator
+
+            local page = new("ScrollingFrame", {
+                Name = tab.name,
+                Size = UDim2.fromScale(1, 1),
+                BackgroundTransparency = 1,
+                BorderSizePixel = 0,
+                ScrollBarImageColor3 = palette.accent,
+                ScrollBarImageTransparency = 0.35,
+                ScrollBarThickness = 3,
+                CanvasSize = UDim2.new(),
+                AutomaticCanvasSize = Enum.AutomaticSize.Y,
+                ScrollingDirection = Enum.ScrollingDirection.Y,
+                Visible = false,
+                Parent = pages,
+            })
+            new("UIPadding", {
+                PaddingTop = UDim.new(0, 2),
+                PaddingBottom = UDim.new(0, 14),
+                PaddingLeft = UDim.new(0, 24),
+                PaddingRight = UDim.new(0, 24),
+                Parent = page,
+            })
+            new("UIListLayout", {
+                Padding = UDim.new(0, 9),
+                SortOrder = Enum.SortOrder.LayoutOrder,
+                Parent = page,
+            })
+            tab.page = page
+
+            function window:SelectTab(selected)
+                for _, other in ipairs(self.tabs) do
+                    local active = other == selected
+                    other.page.Visible = active
+                    tween(other.navButton, 0.16, {
+                        BackgroundColor3 = active and palette.surfaceActive or palette.sidebar,
+                        TextColor3 = active and palette.text or palette.muted,
+                    })
+                    tween(other.indicator, 0.16, {BackgroundTransparency = active and 0 or 1})
+                end
+                self.selectedTab = selected
+                pageTitle.Text = selected.name:gsub("^[^%w]+%s*", "")
+                searchBox.Text = ""
+                selected.page.CanvasPosition = Vector2.zero
+            end
+            connect(navButton.Activated, function()
+                window:SelectTab(tab)
+            end, window.connections)
+            connect(navButton.MouseEnter, function()
+                if window.selectedTab ~= tab then
+                    tween(navButton, 0.14, {BackgroundColor3 = palette.surfaceHover})
+                end
+            end, window.connections)
+            connect(navButton.MouseLeave, function()
+                if window.selectedTab ~= tab then
+                    tween(navButton, 0.14, {BackgroundColor3 = palette.sidebar})
+                end
+            end, window.connections)
+
+            local function makeCard(controlName, description, height)
+                local detailText = description ~= nil and description or descriptions[controlName] or "Configure this option."
+                local hasDescription = detailText ~= ""
+                local card = new("Frame", {
+                    Name = controlName,
+                    Size = UDim2.new(1, -4, 0, height or 64),
+                    BackgroundColor3 = palette.surface,
+                    BorderSizePixel = 0,
+                    ClipsDescendants = true,
+                    Parent = page,
+                })
+                card:SetAttribute("SearchName", (controlName .. " " .. detailText):lower())
+                corner(card, 11)
+                stroke(card, palette.border, 0.4)
+                local title = new("TextLabel", {
+                    Position = hasDescription and UDim2.fromOffset(14, 10) or UDim2.fromOffset(14, 0),
+                    Size = hasDescription and UDim2.new(1, -225, 0, 20) or UDim2.new(1, -225, 1, 0),
+                    BackgroundTransparency = 1,
+                    Font = Enum.Font.GothamSemibold,
+                    Text = controlName,
+                    TextColor3 = palette.text,
+                    TextSize = 13,
+                    TextTruncate = Enum.TextTruncate.AtEnd,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    Parent = card,
+                })
+                local detail = new("TextLabel", {
+                    Position = UDim2.fromOffset(14, 31),
+                    Size = UDim2.new(1, -225, 0, 18),
+                    BackgroundTransparency = 1,
+                    Font = Enum.Font.Gotham,
+                    Text = detailText,
+                    TextColor3 = palette.muted,
+                    TextSize = 10,
+                    TextTruncate = Enum.TextTruncate.AtEnd,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    Visible = hasDescription,
+                    Parent = card,
+                })
+                return card, title, detail
+            end
+
+            function tab:CreateToggle(options)
+                options = options or {}
+                local control = {CurrentValue = options.CurrentValue == true}
+                local card = makeCard(options.Name or "Toggle", options.Description, 62)
+                local track = new("Frame", {
+                    AnchorPoint = Vector2.new(1, 0.5),
+                    Position = UDim2.new(1, -15, 0.5, 0),
+                    Size = UDim2.fromOffset(42, 23),
+                    BackgroundColor3 = control.CurrentValue and palette.accent or Color3.fromRGB(50, 56, 69),
+                    BorderSizePixel = 0,
+                    ZIndex = 2,
+                    Parent = card,
+                })
+                corner(track, 12)
+                local knob = new("Frame", {
+                    AnchorPoint = Vector2.new(0.5, 0.5),
+                    Position = control.CurrentValue and UDim2.new(1, -12, 0.5, 0) or UDim2.new(0, 12, 0.5, 0),
+                    Size = UDim2.fromOffset(17, 17),
+                    BackgroundColor3 = palette.text,
+                    BorderSizePixel = 0,
+                    ZIndex = 2,
+                    Parent = track,
+                })
+                corner(knob, 9)
+                local click = new("TextButton", {
+                    Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+                    Text = "", AutoButtonColor = false, ZIndex = 1, Parent = card,
+                })
+                control.Instance = card
+                local trackTween
+                local knobTween
+                function control:Set(value)
+                    value = value == true
+                    if self.CurrentValue == value then return end
+                    self.CurrentValue = value
+                    if trackTween then trackTween:Cancel() end
+                    if knobTween then knobTween:Cancel() end
+                    trackTween = tween(track, 0.18, {
+                        BackgroundColor3 = value and palette.accent or Color3.fromRGB(50, 56, 69),
+                    })
+                    knobTween = tween(knob, 0.18, {
+                        Position = value and UDim2.new(1, -12, 0.5, 0) or UDim2.new(0, 12, 0.5, 0),
+                    })
+                    invoke(options.Callback, value)
+                end
+                table.insert(window.themeRefreshers, function(accent)
+                    if trackTween then
+                        trackTween:Cancel()
+                        trackTween = nil
+                    end
+                    track.BackgroundColor3 = control.CurrentValue
+                        and accent
+                        or Color3.fromRGB(50, 56, 69)
+                end)
+                connect(click.Activated, function() control:Set(not control.CurrentValue) end, window.connections)
+                setHover(click, card, palette.surface, palette.surfaceHover)
+                table.insert(tab.controls, control)
+                return control
+            end
+
+            function tab:CreateButton(options)
+                options = options or {}
+                local card = makeCard(options.Name or "Action", options.Description, 58)
+                local button = new("TextButton", {
+                    AnchorPoint = Vector2.new(1, 0.5),
+                    Position = UDim2.new(1, -14, 0.5, 0),
+                    Size = UDim2.fromOffset(82, 30),
+                    BackgroundColor3 = palette.accentSoft,
+                    BorderSizePixel = 0,
+                    AutoButtonColor = false,
+                    Font = Enum.Font.GothamSemibold,
+                    Text = "Run",
+                    TextColor3 = Color3.fromRGB(255, 211, 229),
+                    TextSize = 11,
+                    Parent = card,
+                })
+                corner(button, 8)
+                setHover(button, button, palette.accentSoft, palette.accent)
+                connect(button.Activated, function()
+                    tween(button, 0.07, {Size = UDim2.fromOffset(78, 28)})
+                    task.delay(0.08, function()
+                        if button.Parent then tween(button, 0.1, {Size = UDim2.fromOffset(82, 30)}) end
+                    end)
+                    invoke(options.Callback)
+                end, window.connections)
+                return {Instance = card}
+            end
+
+            function tab:CreateLabel(text)
+                local control = {}
+                local card = new("Frame", {
+                    Name = "Status",
+                    Size = UDim2.new(1, -4, 0, 42),
+                    BackgroundColor3 = palette.accentSoft,
+                    BorderSizePixel = 0,
+                    Parent = page,
+                })
+                card:SetAttribute("SearchName", tostring(text):lower())
+                corner(card, 10)
+                local label = new("TextLabel", {
+                    Position = UDim2.fromOffset(14, 0),
+                    Size = UDim2.new(1, -28, 1, 0),
+                    BackgroundTransparency = 1,
+                    Font = Enum.Font.GothamSemibold,
+                    Text = tostring(text),
+                    TextColor3 = Color3.fromRGB(255, 211, 229),
+                    TextSize = 11,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    Parent = card,
+                })
+                function control:Set(value)
+                    label.Text = tostring(value)
+                    card:SetAttribute("SearchName", tostring(value):lower())
+                end
+                return control
+            end
+
+            function tab:CreateInput(options)
+                options = options or {}
+                local card = makeCard(options.Name or "Input", options.Description, 64)
+                local box = new("TextBox", {
+                    AnchorPoint = Vector2.new(1, 0.5),
+                    Position = UDim2.new(1, -14, 0.5, 0),
+                    Size = UDim2.fromOffset(180, 32),
+                    BackgroundColor3 = palette.background,
+                    BorderSizePixel = 0,
+                    ClearTextOnFocus = false,
+                    Font = Enum.Font.Gotham,
+                    PlaceholderText = options.PlaceholderText or "Type here...",
+                    PlaceholderColor3 = Color3.fromRGB(95, 104, 120),
+                    Text = options.CurrentValue or "",
+                    TextColor3 = palette.text,
+                    TextSize = 11,
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    Parent = card,
+                })
+                corner(box, 8)
+                stroke(box, palette.border, 0.25)
+                new("UIPadding", {PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 10), Parent = box})
+                connect(box.Focused, function() tween(box, 0.15, {BackgroundColor3 = palette.surfaceActive}) end, window.connections)
+                connect(box.FocusLost, function()
+                    tween(box, 0.15, {BackgroundColor3 = palette.background})
+                    invoke(options.Callback, box.Text)
+                    if options.RemoveTextAfterFocusLost then box.Text = "" end
+                end, window.connections)
+                return {Instance = card, TextBox = box}
+            end
+
+            function tab:CreateSlider(options)
+                options = options or {}
+                local minimum = tonumber(options.Range and options.Range[1]) or 0
+                local maximum = tonumber(options.Range and options.Range[2]) or 100
+                local increment = tonumber(options.Increment) or 1
+                local control = {CurrentValue = tonumber(options.CurrentValue) or minimum}
+                local card, _, detail = makeCard(options.Name or "Slider", options.Description, 72)
+                detail.Visible = false
+                local valueLabel = new("TextLabel", {
+                    AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -15, 0, 11),
+                    Size = UDim2.fromOffset(55, 18), BackgroundTransparency = 1,
+                    Font = Enum.Font.GothamSemibold, Text = tostring(control.CurrentValue),
+                    TextColor3 = palette.accent, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Right,
+                    Parent = card,
+                })
+                local track = new("Frame", {
+                    Position = UDim2.fromOffset(14, 48), Size = UDim2.new(1, -28, 0, 5),
+                    BackgroundColor3 = Color3.fromRGB(46, 52, 65), BorderSizePixel = 0, Parent = card,
+                })
+                corner(track, 3)
+                local fill = new("Frame", {Size = UDim2.fromScale(0, 1), BackgroundColor3 = palette.accent, BorderSizePixel = 0, Parent = track})
+                corner(fill, 3)
+                local knob = new("Frame", {
+                    AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0, 0.5),
+                    Size = UDim2.fromOffset(13, 13), BackgroundColor3 = palette.text, BorderSizePixel = 0, Parent = track,
+                })
+                corner(knob, 7)
+                stroke(knob, palette.accent, 0)
+                local draggingSlider = false
+                local function render(value, animate)
+                    local ratio = maximum == minimum and 0 or (value - minimum) / (maximum - minimum)
+                    local properties = {Size = UDim2.fromScale(ratio, 1)}
+                    local knobProperties = {Position = UDim2.fromScale(ratio, 0.5)}
+                    if animate then tween(fill, 0.1, properties); tween(knob, 0.1, knobProperties)
+                    else fill.Size = properties.Size; knob.Position = knobProperties.Position end
+                    valueLabel.Text = tostring(value)
+                end
+                function control:Set(value)
+                    value = math.clamp(tonumber(value) or minimum, minimum, maximum)
+                    value = math.floor((value - minimum) / increment + 0.5) * increment + minimum
+                    value = math.clamp(value, minimum, maximum)
+                    if self.CurrentValue == value then render(value, true); return end
+                    self.CurrentValue = value
+                    render(value, true)
+                    invoke(options.Callback, value)
+                end
+                local hitbox = new("TextButton", {
+                    Position = UDim2.fromOffset(-5, -8), Size = UDim2.new(1, 10, 1, 16),
+                    BackgroundTransparency = 1, Text = "", Parent = track,
+                })
+                local function updateFromPosition(position)
+                    control:Set(minimum + math.clamp((position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1) * (maximum - minimum))
+                end
+                connect(hitbox.InputBegan, function(input)
+                    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                        draggingSlider = true; updateFromPosition(input.Position)
+                    end
+                end, window.connections)
+                connect(UserInputService.InputChanged, function(input)
+                    if draggingSlider and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+                        updateFromPosition(input.Position)
+                    end
+                end, window.connections)
+                connect(UserInputService.InputEnded, function(input)
+                    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then draggingSlider = false end
+                end, window.connections)
+                render(control.CurrentValue, false)
+                return control
+            end
+
+            function tab:CreateDropdown(options)
+                options = options or {}
+                local control = {CurrentOption = options.CurrentOption or "", Options = options.Options or {}, open = false}
+                local optionConnections = {}
+                local card = makeCard(options.Name or "Dropdown", options.Description, 64)
+                local selector = new("TextButton", {
+                    AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 15),
+                    Size = UDim2.fromOffset(180, 34), BackgroundColor3 = palette.background,
+                    BorderSizePixel = 0, AutoButtonColor = false, Font = Enum.Font.Gotham,
+                    Text = "  Select...", TextColor3 = palette.muted, TextSize = 11,
+                    TextTruncate = Enum.TextTruncate.AtEnd, TextXAlignment = Enum.TextXAlignment.Left, Parent = card,
+                })
+                corner(selector, 8); stroke(selector, palette.border, 0.25)
+                local list = new("ScrollingFrame", {
+                    Position = UDim2.fromOffset(14, 58), Size = UDim2.new(1, -28, 0, 0),
+                    BackgroundTransparency = 1, BorderSizePixel = 0, ClipsDescendants = true,
+                    CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+                    ScrollBarThickness = 2, ScrollBarImageColor3 = palette.accent, Parent = card,
+                })
+                local layout = new("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder, Parent = list})
+
+                local function selectedText(value)
+                    if typeof(value) == "table" then value = value[1] end
+                    if value == nil or value == "" then return "  Select..." end
+                    return "  " .. tostring(value)
+                end
+                local function rebuild()
+                    for _, connection in ipairs(optionConnections) do
+                        connection:Disconnect()
+                    end
+                    table.clear(optionConnections)
+                    for _, child in ipairs(list:GetChildren()) do
+                        if child:IsA("GuiButton") then child:Destroy() end
+                    end
+                    for _, option in ipairs(control.Options) do
+                        local value = typeof(option) == "Instance" and option.Name or tostring(option)
+                        local optionButton = new("TextButton", {
+                            Size = UDim2.new(1, 0, 0, 30), BackgroundColor3 = palette.background,
+                            BorderSizePixel = 0, AutoButtonColor = false, Font = Enum.Font.Gotham,
+                            Text = "  " .. value, TextColor3 = palette.text, TextSize = 11,
+                            TextXAlignment = Enum.TextXAlignment.Left, Parent = list,
+                        })
+                        corner(optionButton, 7)
+                        table.insert(optionConnections, optionButton.MouseEnter:Connect(function()
+                            tween(optionButton, 0.14, {BackgroundColor3 = palette.surfaceActive})
+                        end))
+                        table.insert(optionConnections, optionButton.MouseLeave:Connect(function()
+                            tween(optionButton, 0.14, {BackgroundColor3 = palette.background})
+                        end))
+                        table.insert(optionConnections, optionButton.Activated:Connect(function()
+                            control:Set(value)
+                            control.open = false
+                            tween(card, 0.18, {Size = UDim2.new(1, -4, 0, 64)})
+                            tween(list, 0.18, {Size = UDim2.new(1, -28, 0, 0)})
+                        end))
+                    end
+                end
+                function control:Set(value)
+                    if typeof(value) == "table" then value = value[1] end
+                    self.CurrentOption = value or ""
+                    selector.Text = selectedText(self.CurrentOption)
+                    invoke(options.Callback, self.CurrentOption)
+                end
+                function control:Refresh(newOptions, clearSelection)
+                    self.Options = newOptions or {}
+                    if clearSelection then
+                        self.CurrentOption = ""
+                        selector.Text = selectedText("")
+                    end
+                    rebuild()
+                end
+                connect(selector.Activated, function()
+                    control.open = not control.open
+                    local visibleCount = math.min(#control.Options, 6)
+                    local listHeight = visibleCount * 34
+                    tween(card, 0.2, {Size = UDim2.new(1, -4, 0, control.open and (70 + listHeight) or 64)})
+                    tween(list, 0.2, {Size = UDim2.new(1, -28, 0, control.open and listHeight or 0)})
+                end, window.connections)
+                setHover(selector, selector, palette.background, palette.surfaceActive)
+                rebuild()
+                return control
+            end
+
+            function tab:CreateKeybind(options)
+                options = options or {}
+                local control = {CurrentKeybind = tostring(options.CurrentKeybind or "None")}
+                local card
+                local keybindRoot
+                if options.InlineParent then
+                    card = options.InlineParent
+                    keybindRoot = new("Frame", {
+                        Name = options.Name or "Keybind",
+                        AnchorPoint = Vector2.new(1, 0.5),
+                        Position = UDim2.new(1, -68, 0.5, 0),
+                        Size = UDim2.fromOffset(96, 30),
+                        BackgroundTransparency = 1,
+                        ZIndex = 4,
+                        Parent = card,
+                    })
+                else
+                    card = makeCard(options.Name or "Keybind", options.Description or "Click the field, then press a key.", 58)
+                    keybindRoot = card
+                end
+                local holder = new("Frame", {
+                    AnchorPoint = options.InlineParent and Vector2.zero or Vector2.new(1, 0.5),
+                    Position = options.InlineParent and UDim2.new() or UDim2.new(1, -14, 0.5, 0),
+                    Size = options.InlineParent and UDim2.fromScale(1, 1) or UDim2.fromOffset(105, 30),
+                    BackgroundTransparency = 1,
+                    ZIndex = 4,
+                    Parent = keybindRoot,
+                })
+                local box = new("TextBox", {
+                    Name = "KeybindBox", Size = UDim2.fromScale(1, 1), BackgroundColor3 = palette.background,
+                    BorderSizePixel = 0, ClearTextOnFocus = false, TextEditable = false,
+                    Font = Enum.Font.GothamSemibold, Text = control.CurrentKeybind,
+                    TextColor3 = palette.muted, TextSize = 10, ZIndex = 5, Parent = holder,
+                })
+                corner(box, 8); stroke(box, palette.border, 0.25)
+                local capture
+                function control:Set(value)
+                    value = tostring(value or "None")
+                    self.CurrentKeybind = value
+                    box.Text = value
+                    invoke(options.Callback, value)
+                end
+                connect(box.Focused, function()
+                    box.Text = "Press a key..."
+                    tween(box, 0.15, {BackgroundColor3 = palette.surfaceActive, TextColor3 = palette.text})
+                    task.defer(function()
+                        if capture then capture:Disconnect() end
+                        capture = UserInputService.InputBegan:Connect(function(input)
+                            if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+                            local key = input.KeyCode == Enum.KeyCode.Escape and "None" or input.KeyCode.Name
+                            box:ReleaseFocus()
+                            control:Set(key)
+                            capture:Disconnect(); capture = nil
+                        end)
+                        table.insert(window.connections, capture)
+                    end)
+                end, window.connections)
+                connect(box.FocusLost, function()
+                    if box.Text == "Press a key..." then box.Text = control.CurrentKeybind end
+                    tween(box, 0.15, {BackgroundColor3 = palette.background, TextColor3 = palette.muted})
+                end, window.connections)
+                return control
+            end
+
+            if not window.selectedTab then
+                window:SelectTab(tab)
+            end
+            return tab
+        end
+
+        window.transitioning = true
+        window.restingPosition = UDim2.fromScale(0.5, 0.5)
+        shell.Position = UDim2.fromScale(0.5, 0.54)
+        shade.Position = shell.Position
+        shell.GroupTransparency = 1
+        shade.BackgroundTransparency = 1
+        scale.Scale = baseScale
+        tween(shell, 0.32, {
+            GroupTransparency = 0,
+            Position = window.restingPosition,
+        }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+        tween(shade, 0.32, {
+            BackgroundTransparency = 1,
+            Position = window.restingPosition,
+        }, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+        task.delay(0.33, function()
+            if gui.Parent then
+                window.transitioning = false
+            end
+        end)
+        return window
+    end
+
+    function api:Notify(options)
+        if self.destroyed then return end
+        options = options or {}
+        local window = self.windows[#self.windows]
+        local gui = window and window.gui
+        if not gui or not gui.Parent then return end
+        local holder = gui:FindFirstChild("Notifications")
+        if not holder then
+            holder = new("Frame", {
+                Name = "Notifications", AnchorPoint = Vector2.new(1, 1),
+                Position = UDim2.new(1, -18, 1, -18), Size = UDim2.fromOffset(330, 420),
+                BackgroundTransparency = 1, Parent = gui,
+            })
+            new("UIListLayout", {
+                Padding = UDim.new(0, 8), VerticalAlignment = Enum.VerticalAlignment.Bottom,
+                HorizontalAlignment = Enum.HorizontalAlignment.Right, SortOrder = Enum.SortOrder.LayoutOrder,
+                Parent = holder,
+            })
+        end
+        local toast = new("Frame", {
+            Size = UDim2.fromOffset(0, 70), BackgroundColor3 = palette.surface,
+            BackgroundTransparency = 0.03, BorderSizePixel = 0, Parent = holder,
+        })
+        corner(toast, 11); stroke(toast, palette.border, 0.15)
+        local bar = new("Frame", {Size = UDim2.fromOffset(4, 70), BackgroundColor3 = palette.accent, BorderSizePixel = 0, Parent = toast})
+        corner(bar, 3)
+        new("TextLabel", {
+            Position = UDim2.fromOffset(16, 10), Size = UDim2.new(1, -28, 0, 19),
+            BackgroundTransparency = 1, Font = Enum.Font.GothamBold, Text = tostring(options.Title or "MARI-HUB"),
+            TextColor3 = palette.text, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, Parent = toast,
+        })
+        new("TextLabel", {
+            Position = UDim2.fromOffset(16, 31), Size = UDim2.new(1, -28, 0, 27),
+            BackgroundTransparency = 1, Font = Enum.Font.Gotham, Text = tostring(options.Content or ""),
+            TextColor3 = palette.muted, TextSize = 10, TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Parent = toast,
+        })
+        tween(toast, 0.25, {Size = UDim2.fromOffset(310, 70)})
+        task.delay(tonumber(options.Duration) or 2, function()
+            if toast.Parent then
+                tween(toast, 0.2, {Size = UDim2.fromOffset(0, 70), BackgroundTransparency = 1})
+                task.delay(0.22, function() if toast.Parent then toast:Destroy() end end)
+            end
+        end)
+    end
+
+    function api:Destroy()
+        if self.destroyed then return end
+        self.destroyed = true
+        for _, connection in ipairs(self.connections) do pcall(function() connection:Disconnect() end) end
+        for _, window in ipairs(self.windows) do
+            for _, connection in ipairs(window.connections) do pcall(function() connection:Disconnect() end) end
+            if window.gui then window.gui:Destroy() end
+        end
+        table.clear(self.connections)
+        table.clear(self.windows)
+        if _G.__MariHubUICleanup == self.cleanup then
+            _G.__MariHubUICleanup = nil
+        end
+    end
+
+    api.cleanup = function()
+        api:Destroy()
+    end
+    _G.__MariHubUICleanup = api.cleanup
+    return api
+end
+
 -------------------------------------------
 ----------------MAIN HUB-------------------
 -------------------------------------------
 
 LoadHub = function(usedSavedKey)
-    local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+    local Rayfield = createMariUI()
         local Window = Rayfield:CreateWindow({
         Name = "MARI-HUB | Gakuran",
         LoadingTitle = "MARI-HUB",
@@ -97,10 +1448,19 @@ local noDodgeCooldownHook = nil
 local antiStunEnabled = false
 local antiStunConnection = nil
 local espEnabled = false
-local infCamZoomEnabled = false
-local savedCamMaxZoom = nil
+local espDistance = 500
 local jetpack = {enabled = false, velocity = nil, connection = nil}
 local returnByDeath = {enabled = false, deathPosition = nil, deathConnections = {}, teleportToken = 0}
+local rhythmAutoPerfect = {
+    enabled = false,
+    connection = nil,
+    service = nil,
+    session = nil,
+    nextScanAt = 0,
+    heldNotes = {},
+    heldLanes = {},
+    tapReleaseAt = {},
+}
 
 task.spawn(function()
     while pingSamplerActive do
@@ -137,13 +1497,14 @@ end
 local flingActive = false
 local flingPower = 50
 local targetPlayer = nil
-local targetMode = false
+local selectedFling = {duration = 1, token = 0, running = false}
 local rejoinCooldown = false
 local namesVisible = false
 local nameTagsActive = true
 local healthBarsVisible = false
 local healthBarsActive = true
 local flingConnection = nil
+local flingPulse = 0
 local antiFlingEnabled = false
 local antiFlingConnection = nil
 local blinkConnection
@@ -156,6 +1517,92 @@ local updatingDropdown = false
 local UI = {
     configNameInput = "",
     unloaded = false,
+    colorPreset = "Pink",
+    toggleKeybind = "RightShift",
+    restoreButtonEnabled = true,
+    animationsEnabled = true,
+    scalePercent = 100,
+    walkSpeed = {
+        enabled = false,
+        value = 24,
+        connections = {},
+        humanoid = nil,
+        originalSpeed = nil,
+        changingSpeed = false,
+        token = 0,
+    },
+    autoGreen = {
+        enabled = false,
+        connection = nil,
+        releasedForShot = false,
+        activeMarker = nil,
+        readyAt = 0,
+    },
+    autoPiano = {
+        enabled = false,
+        token = 0,
+        selectedSong = "Twinkle Twinkle",
+        keyLayout = "1!2@34$5%6^78*9(0qQwWeErtTyYuiIoOpPasSdDfgGhHjJklLzZxcCvVbBnm",
+        digitKeys = {
+            ["0"] = "Zero", ["1"] = "One", ["2"] = "Two", ["3"] = "Three",
+            ["4"] = "Four", ["5"] = "Five", ["6"] = "Six", ["7"] = "Seven",
+            ["8"] = "Eight", ["9"] = "Nine",
+        },
+        symbolKeys = {
+            ["!"] = "One", ["@"] = "Two", ["#"] = "Three", ["$"] = "Four",
+            ["%"] = "Five", ["^"] = "Six", ["&"] = "Seven", ["*"] = "Eight",
+            ["("] = "Nine", [")"] = "Zero",
+        },
+        songs = {
+            ["Twinkle Twinkle"] = {
+                tempo = 116,
+                sequence = "25 25 32 32 34 34 32:2 30 30 29 29 27 27 25:2 32 32 30 30 29 29 27:2 32 32 30 30 29 29 27:2 25 25 32 32 34 34 32:2 30 30 29 29 27 27 25:2",
+            },
+            ["Happy Birthday"] = {
+                tempo = 108,
+                sequence = "20:.5 20:.5 22 20 25 24:2 20:.5 20:.5 22 20 27 25:2 20:.5 20:.5 32 29 25 24 22:2 30:.5 30:.5 29 25 27 25:2",
+            },
+            ["Ode to Joy"] = {
+                tempo = 118,
+                sequence = "29 29 30 32 32 30 29 27 25 25 27 29 29:1.5 27:.5 27:2 29 29 30 32 32 30 29 27 25 25 27 29 27:1.5 25:.5 25:2 27 27 29 25 27 29:.5 30:.5 29 25 27 29:.5 30:.5 29 27 25 27 20:2 29 29 30 32 32 30 29 27 25 25 27 29 27:1.5 25:.5 25:2",
+            },
+            ["Fur Elise"] = {
+                tempo = 132,
+                sequence = "41:.5 40:.5 41:.5 40:.5 41:.5 36:.5 39:.5 37:.5 34 25:.5 29:.5 34:.5 36 29:.5 33:.5 36:.5 37 29:.5 41:.5 40:.5 41:.5 40:.5 41:.5 36:.5 39:.5 37:.5 34 25:.5 29:.5 34:.5 36 29:.5 37:.5 36:.5 34:2",
+            },
+            ["Jingle Bells"] = {
+                tempo = 128,
+                sequence = "29 29 29:2 29 29 29:2 29 32 25:1.5 27:.5 29:4 30 30 30:1.5 30:.5 30 29 29:.5 29:.5 29 27 27 29 27:2 32:2 29 29 29:2 29 29 29:2 29 32 25:1.5 27:.5 29:4 30 30 30 30 30 29 29 32 32 30 27 25:4",
+            },
+            ["Unravel (Tokyo Ghoul)"] = {
+                step = 0.3,
+                barRest = 0.48,
+                sheet = "J l J j h l J j h h h g g D g d d d d d z z J j j j J J j j J J J l J j h l J j h h g g D g d d d d d z z J j j j J J h h h h h h h h h h d o o p o o P p d o o p o o P p h h h h h h h h h h d J d h y y i Y y y o i Y d J d h d d D d J d d j D d J d h y y i Y y y o i Y d J d h d d D d J d d j D",
+            },
+            ["Blue Bird (Naruto)"] = {
+                step = 0.24,
+                barRest = 0.42,
+                sheet = "fjkl|k j||fjkl|z lz x|fjkl|k j||jxz jxz h h jj|||fjklflk jhj sdf fff|ghjh hhhjklk fjk|lflk jhj sdf fff|g l kj h hj fjkl||l k lk fklz||z l kj jlzx jl z x|xv cx||xfjkl|k j||fjkl|z lz x|fjkl|k j||jxz jxz h h jj",
+            },
+            ["A Cruel Angel's Thesis (Evangelion)"] = {
+                step = 0.25,
+                barRest = 0.45,
+                sheet = "tpe||s||qed|s|d|wrd||h|g|wtf|d|f||tfe||h||qje|d|s|wrh|h|f|h|qhe|j|||je wh f0 d9 f0 d9 s8 o5|tp6 0 utse 0 id2 9 s q d9 da5 da9 wh g9 f1 d w o f u t w",
+            },
+            ["L's Theme (Death Note)"] = {
+                step = 0.28,
+                barRest = 0.45,
+                sheet = "h f j f G h f k j h G f d h f j f G h f k j h G f d f|[oh] [uf] [pj] [uf] [IG] [oh] [uf] [ka] [pj] [oh] [IG] [uf] [yd] [oh] [uf] [pj] [uf] [IG] [oh] [uf] [ka] [pj] [oh] [IG] [uf] [yd] [uf]|[oh] [uf] [pj] [uf] [IG] [oh] [uf] [ka] [pj] [oh] [IG] [uf] [yd] [oh] [uf] [pj] [uf] [IG] [oh] [uf] [ka] [pj] [oh] [IG] [uf] [yd] [uf]|[h3] f [pj] [uf] [IG] [oh] [uf] [ka] [pj] [oh] [IG] [uf] [yd] [h3] f [pj] [uf] [IG] [oh] [uf] [ka] [pj] [oh] [IG] [uf] [yd] [uf]|[h3] f [pj] [uf] [IG] [oh] [uf] [ka] [pj] [oh] [IG] [uf] [yd] [h3] f [pj] [uf] [IG] [oh] [uf] [ka] [pj] [oh] [IG] [uf] [yd] [uf]",
+            },
+            ["Beethoven Virus"] = {
+                step = 0.14,
+                barRest = 0.3,
+                sheet = "[7] [6] [6] [18] [6] [6] [29] [6][6] [30] [6] [6] [4q] [6] [6] [4q][30] [6] [29] [6] [6] [18] [6][6] [7] [6] [6] [18] [6u] [7p] [6a][6s]|0 e [td] [%a] 0 W [0s][6p] 0 e t u [tp] O [ep] a [0s] d[6f] 0 [ef] t [5f] 9 [wf] r[18f] w t u o u [td] [wf][29d] [wf] [yg] i [30a] r [us] [Od][6s] [0d] [ef] t [29p] e [yp] [ea][18s] Q t [Yd] [30a] r u [rs]|[6p] 0 e t u [tu] [ep] [0a][6s] 0 e [td] [%a] 0 W [0s][6p] 0 e t u [tp] O [ep] a [0s] d[6f] 0 [ef] t [5f] 9 [wf] r[18f] w t u o u [td] [wf][29d] [ef] [yg] i [30a] r [us] [Od][6s] [0d] [ef] t [29p] e [yp] [ea][18s] Q t [Yd] [30a] r u [rs]|[6p] [30] [6e] [8t] [0u] [8tp] [%WO] [30p][3a] [3u] [3Y] [3u] [%a] [%u] [%f] [%d][6d] [6s] [6a] [6p] [6p] [6a] [6s] [6p][5a] [5o] [5I] [5o] [7a] [7o] [7h] [7g][18g] [18f] [18d] [18s] [18s] [18d] [18f] [18s]",
+            },
+        },
+    },
+    hpM2Cooldown = {enabled = false},
+    infCamZoom = {enabled = false},
 }
 
 
@@ -165,14 +1612,15 @@ local UI = {
 local flying = false
 local flyKeyDown, flyKeyUp
 
-local CONTROL = {F=0,B=0,L=0,R=0,Q=0,E=0}
-local lCONTROL = {F=0,B=0,L=0,R=0,Q=0,E=0}
-local SPEED = 0
+local CONTROL = {F=0, B=0, L=0, R=0}
 
 local flySpeed = 1
-local QEfly = true
 local flyGyro
 local flyVelocity
+local flyAttachment
+local flyConnection
+local flyHumanoid
+local flyOriginalAutoRotate
 local flyEnabledNoclip = false
 
 -- ===== NOCLIP =====
@@ -199,17 +1647,13 @@ local flyInputBeganConn = UserInputService.InputBegan:Connect(function(input, pr
     if not flying then return end
 
     if input.KeyCode == Enum.KeyCode.W then
-        CONTROL.F = flySpeed
+        CONTROL.F = 1
     elseif input.KeyCode == Enum.KeyCode.S then
-        CONTROL.B = -flySpeed
+        CONTROL.B = -1
     elseif input.KeyCode == Enum.KeyCode.A then
-        CONTROL.L = -flySpeed
+        CONTROL.L = -1
     elseif input.KeyCode == Enum.KeyCode.D then
-        CONTROL.R = flySpeed
-    elseif input.KeyCode == Enum.KeyCode.E and QEfly then
-        CONTROL.Q = flySpeed * 2
-    elseif input.KeyCode == Enum.KeyCode.Q and QEfly then
-        CONTROL.E = -flySpeed * 2
+        CONTROL.R = 1
     end
 end)
 
@@ -224,10 +1668,6 @@ local flyInputEndedConn = UserInputService.InputEnded:Connect(function(input)
         CONTROL.L = 0
     elseif input.KeyCode == Enum.KeyCode.D then
         CONTROL.R = 0
-    elseif input.KeyCode == Enum.KeyCode.E then
-        CONTROL.Q = 0
-    elseif input.KeyCode == Enum.KeyCode.Q then
-        CONTROL.E = 0
     end
 end)
 table.insert(connections, flyInputBeganConn)
@@ -248,7 +1688,7 @@ local function createNotification(title, text)
     Rayfield:Notify({
         Title = title,
         Content = text,
-        Duration = 3,
+        Duration = 2,
     })
 end
 
@@ -298,54 +1738,10 @@ local function updateTargetStatusLabel()
     if not UI.targetStatusLabel then
         return
     end
-
-    local statusText = "OFF"
-
-    if targetMode and targetPlayer then
-        if targetPlayer.Parent == Players then
-            statusText = "ON (Locked: " .. targetPlayer.Name .. ")"
-        else
-            targetPlayer = nil
-            targetMode = false
-        end
+    if targetPlayer and targetPlayer.Parent ~= Players then
+        targetPlayer = nil
     end
-
-    UI.targetStatusLabel:Set("Target Mode: " .. statusText)
-end
-
--- Returns TRUE if target was set, FALSE if failed
-local function setTarget(player)
-
-
-    if player then
-        if not flingActive then
-            targetPlayer = nil
-            targetMode = false
-            createNotification("Error", "Enable fling first!")
-            updateTargetStatusLabel()
-            return false
-        end
-
-        targetPlayer = player
-        targetMode = true
-        createNotification("Target Locked", player.Name)
-        updateTargetStatusLabel()
-        return true
-    else
-    local wasTargetMode = targetMode
-
-    targetPlayer = nil
-    targetMode = false
-
-    createNotification("Target", "Target cleared")
-
-    if wasTargetMode then
-        createNotification("Target Mode", "OFF")
-    end
-
-    updateTargetStatusLabel()
-    return true
-  end
+    UI.targetStatusLabel:Set("Selected Target: " .. (targetPlayer and targetPlayer.Name or "None"))
 end
 
 -- ===== FLING LOGIC =====
@@ -432,6 +1828,7 @@ end
 
 local function stopFlingLoop()
     flingActive = false
+    flingPulse = flingPulse + 1
     if flingConnection then
         flingConnection:Disconnect()
         flingConnection = nil
@@ -458,18 +1855,15 @@ local function startFlingLoop()
     end
     flingConnection = RunService.PostSimulation:Connect(function()
         if not flingActive then return end
+        local pulse = flingPulse
         if not LocalPlayer.Character then return end
         local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
         if not hrp then return end
 
         local victims = {}
-        if targetMode and targetPlayer and targetPlayer.Character then
-            table.insert(victims, targetPlayer.Character)
-        else
-            for _, p in pairs(Players:GetPlayers()) do
-                if p ~= LocalPlayer and p.Character then
-                    table.insert(victims, p.Character)
-                end
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                table.insert(victims, p.Character)
             end
         end
 
@@ -489,24 +1883,14 @@ local function startFlingLoop()
         end
 
         local shouldFling = false
-        if targetMode and targetPlayer then
-            if targetPlayer.Character then
-                local tHrp = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+        for _, p in pairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                local tHrp = p.Character:FindFirstChild("HumanoidRootPart")
                 if tHrp then
                     local dist = (hrp.Position - tHrp.Position).Magnitude
-                    if dist <= 20 then shouldFling = true end
-                end
-            end
-        else
-            for _, p in pairs(Players:GetPlayers()) do
-                if p ~= LocalPlayer and p.Character then
-                    local tHrp = p.Character:FindFirstChild("HumanoidRootPart")
-                    if tHrp then
-                        local dist = (hrp.Position - tHrp.Position).Magnitude
-                        if dist <= 20 then
-                            shouldFling = true
-                            break
-                        end
+                    if dist <= 20 then
+                        shouldFling = true
+                        break
                     end
                 end
             end
@@ -530,10 +1914,17 @@ local function startFlingLoop()
             pcall(function()
                 RunService.RenderStepped:Wait()
             end)
-            pcall(function()
-                hrp.Velocity = oldV
-                hrp.AssemblyLinearVelocity = oldV
-            end)
+            if flingActive and pulse == flingPulse then
+                pcall(function()
+                    hrp.Velocity = oldV
+                    hrp.AssemblyLinearVelocity = oldV
+                end)
+            else
+                pcall(function()
+                    hrp.Velocity = Vector3.zero
+                    hrp.AssemblyLinearVelocity = Vector3.zero
+                end)
+            end
             for _, part in ipairs(playerGhosted) do
                 if part and part.Parent then
                     part.CanCollide = true
@@ -653,6 +2044,150 @@ local function toggleFling(newState)
             end
         end)
     end
+end
+
+function selectedFling.restoreArms()
+    for joint, transform in pairs(selectedFling.armTransforms or {}) do
+        if joint.Parent then
+            joint.Transform = transform
+        end
+    end
+    for part, canCollide in pairs(selectedFling.armCollisions or {}) do
+        if part.Parent then
+            part.CanCollide = canCollide
+        end
+    end
+    selectedFling.armTransforms = nil
+    selectedFling.armCollisions = nil
+end
+
+function selectedFling.stop(restore)
+    selectedFling.token = selectedFling.token + 1
+    selectedFling.running = false
+    local root = selectedFling.root
+    local humanoid = selectedFling.humanoid
+    if root and root.Parent then
+        root.AssemblyLinearVelocity = Vector3.zero
+        root.AssemblyAngularVelocity = Vector3.zero
+        if restore and selectedFling.savedCFrame then
+            root.CFrame = selectedFling.savedCFrame
+        end
+        if selectedFling.savedAnchored ~= nil then
+            root.Anchored = selectedFling.savedAnchored
+        end
+    end
+    if humanoid and humanoid.Parent and selectedFling.savedPlatformStand ~= nil then
+        humanoid.PlatformStand = selectedFling.savedPlatformStand
+    end
+    selectedFling.restoreArms()
+    selectedFling.root = nil
+    selectedFling.humanoid = nil
+    selectedFling.savedCFrame = nil
+    selectedFling.savedAnchored = nil
+    selectedFling.savedPlatformStand = nil
+end
+
+function selectedFling.start()
+    if selectedFling.running then
+        selectedFling.stop(true)
+        createNotification("Fling Selected", "Fling cancelled.")
+        return
+    end
+
+    local player = targetPlayer
+    local targetCharacter = player and player.Character
+    local targetHumanoid = targetCharacter and targetCharacter:FindFirstChildOfClass("Humanoid")
+    local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not player or not targetHumanoid or targetHumanoid.Health <= 0 or not targetRoot then
+        createNotification("Fling Selected", "Choose a living target first.")
+        return
+    end
+    if not character or not humanoid or humanoid.Health <= 0 or not root then
+        createNotification("Fling Selected", "Your character is unavailable.")
+        return
+    end
+
+    if flingActive then
+        toggleFling(false)
+    end
+    selectedFling.stop(false)
+    selectedFling.running = true
+    local token = selectedFling.token
+    selectedFling.root = root
+    selectedFling.humanoid = humanoid
+    selectedFling.savedCFrame = root.CFrame
+    selectedFling.savedAnchored = root.Anchored
+    selectedFling.savedPlatformStand = humanoid.PlatformStand
+    selectedFling.armTransforms = {}
+    selectedFling.armCollisions = {}
+    for _, descendant in ipairs(character:GetDescendants()) do
+        if (descendant:IsA("Motor6D") or descendant:IsA("AnimationConstraint"))
+            and (descendant.Name == "LeftShoulder" or descendant.Name == "RightShoulder")
+        then
+            selectedFling.armTransforms[descendant] = descendant.Transform
+        elseif descendant:IsA("BasePart") and (
+            descendant.Name:find("Arm", 1, true) or descendant.Name:find("Hand", 1, true)
+        ) then
+            selectedFling.armCollisions[descendant] = descendant.CanCollide
+            descendant.CanCollide = true
+        end
+    end
+    root.Anchored = false
+    humanoid.PlatformStand = true
+    createNotification("Fling Selected", "Flinging " .. player.Name .. "...")
+
+    task.spawn(function()
+        local startedAt = os.clock()
+        local savedCFrame = selectedFling.savedCFrame
+        while selectedFling.running
+            and token == selectedFling.token
+            and root.Parent
+            and humanoid.Health > 0
+            and os.clock() - startedAt < selectedFling.duration
+        do
+            targetCharacter = player.Character
+            targetHumanoid = targetCharacter and targetCharacter:FindFirstChildOfClass("Humanoid")
+            targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+            if not targetHumanoid or targetHumanoid.Health <= 0 or not targetRoot then break end
+
+            local elapsed = os.clock() - startedAt
+            local phase = elapsed * 28
+            for joint in pairs(selectedFling.armTransforms) do
+                if joint.Parent then
+                    local direction = joint.Name == "LeftShoulder" and -1 or 1
+                    joint.Transform = CFrame.Angles(0, 0, math.rad(90 * direction))
+                end
+            end
+            for part in pairs(selectedFling.armCollisions) do
+                if part.Parent then part.CanCollide = true end
+            end
+            root.CFrame = targetRoot.CFrame
+                * CFrame.new(math.sin(phase) * 1.15, math.sin(phase * 0.7) * 1.2, math.cos(phase) * 1.15)
+                * CFrame.Angles(0, math.rad(3000) * elapsed, 0)
+            root.AssemblyAngularVelocity = Vector3.new(2000, 2000, 2000)
+            local delta = targetRoot.Position - root.Position
+            root.AssemblyLinearVelocity = (delta.Magnitude > 0.05 and delta.Unit or Vector3.xAxis) * 2000
+            RunService.Heartbeat:Wait()
+        end
+
+        if token ~= selectedFling.token or not root.Parent then return end
+        root.Anchored = true
+        root.CFrame = savedCFrame
+        root.AssemblyAngularVelocity = Vector3.zero
+        root.AssemblyLinearVelocity = Vector3.zero
+        RunService.Heartbeat:Wait()
+        if token ~= selectedFling.token then return end
+        root.CFrame = savedCFrame
+        root.AssemblyAngularVelocity = Vector3.zero
+        root.AssemblyLinearVelocity = Vector3.zero
+        RunService.Heartbeat:Wait()
+        if token ~= selectedFling.token then return end
+        selectedFling.stop(false)
+        createNotification("Fling Selected", "Sequence complete.")
+    end)
 end
 
 -- ===== USERNAME TAGS =====
@@ -975,6 +2510,8 @@ end
 end
 
 -- ======FLY=========
+local StartFly, StopFly
+--[[ Legacy implementation retained only for source history.
 local function StartFly()
   if flying then return end -- Prevent multiple fly loops
 flying = true
@@ -1072,6 +2609,224 @@ local function StopFly()
     flyEnabledNoclip = false
 end
 end
+]]
+
+-- Modern camera-relative flight replaces the legacy body-mover implementation above.
+StartFly = function()
+    if flying then return end
+
+    local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 10)
+    local root = character:FindFirstChild("HumanoidRootPart") or character:WaitForChild("HumanoidRootPart", 10)
+    if not humanoid or not root then return end
+
+    flying = true
+    CONTROL.F = UserInputService:IsKeyDown(Enum.KeyCode.W) and 1 or 0
+    CONTROL.B = UserInputService:IsKeyDown(Enum.KeyCode.S) and -1 or 0
+    CONTROL.L = UserInputService:IsKeyDown(Enum.KeyCode.A) and -1 or 0
+    CONTROL.R = UserInputService:IsKeyDown(Enum.KeyCode.D) and 1 or 0
+    if not noclipEnabled then
+        flyEnabledNoclip = true
+        toggleNoclip(true, true)
+    else
+        flyEnabledNoclip = false
+    end
+
+    for _, name in ipairs({"MariFlyAttachment", "MariFlyVelocity", "MariFlyOrientation"}) do
+        local old = root:FindFirstChild(name)
+        if old then old:Destroy() end
+    end
+
+    flyHumanoid = humanoid
+    flyOriginalAutoRotate = humanoid.AutoRotate
+    humanoid.AutoRotate = false
+    humanoid.PlatformStand = true
+
+    flyAttachment = Instance.new("Attachment")
+    flyAttachment.Name = "MariFlyAttachment"
+    flyAttachment.Parent = root
+
+    flyVelocity = Instance.new("LinearVelocity")
+    flyVelocity.Name = "MariFlyVelocity"
+    flyVelocity.Attachment0 = flyAttachment
+    flyVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
+    flyVelocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+    flyVelocity.MaxForce = math.huge
+    flyVelocity.VectorVelocity = Vector3.zero
+    flyVelocity.Parent = root
+
+    flyGyro = Instance.new("AlignOrientation")
+    flyGyro.Name = "MariFlyOrientation"
+    flyGyro.Attachment0 = flyAttachment
+    flyGyro.Mode = Enum.OrientationAlignmentMode.OneAttachment
+    flyGyro.RigidityEnabled = false
+    flyGyro.Responsiveness = 35
+    flyGyro.MaxTorque = math.huge
+    flyGyro.Parent = root
+
+    flyConnection = RunService.RenderStepped:Connect(function(deltaTime)
+        if not flying
+            or character ~= LocalPlayer.Character
+            or not root.Parent
+            or not flyVelocity
+            or not flyGyro
+        then
+            return
+        end
+
+        local camera = workspace.CurrentCamera
+        if not camera then return end
+        local forward = camera.CFrame.LookVector.Unit
+        local right = camera.CFrame.RightVector.Unit
+
+        local direction = forward * (CONTROL.F + CONTROL.B)
+            + right * (CONTROL.R + CONTROL.L)
+        if direction.Magnitude > 1 then
+            direction = direction.Unit
+        end
+
+        local targetVelocity = direction * (flySpeed * 50)
+        flyVelocity.VectorVelocity = flyVelocity.VectorVelocity:Lerp(
+            targetVelocity,
+            math.clamp(deltaTime * 12, 0, 1)
+        )
+        local facing = Vector3.new(forward.X, 0, forward.Z)
+        if facing.Magnitude < 0.01 then
+            facing = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+        end
+        if facing.Magnitude >= 0.01 then
+            flyGyro.CFrame = CFrame.lookAt(Vector3.zero, facing.Unit, Vector3.yAxis)
+        end
+    end)
+end
+
+StopFly = function()
+    flying = false
+
+    if flyConnection then
+        flyConnection:Disconnect()
+        flyConnection = nil
+    end
+    if flyGyro then
+        flyGyro:Destroy()
+        flyGyro = nil
+    end
+    if flyVelocity then
+        flyVelocity:Destroy()
+        flyVelocity = nil
+    end
+    if flyAttachment then
+        flyAttachment:Destroy()
+        flyAttachment = nil
+    end
+
+    CONTROL = {F=0, B=0, L=0, R=0}
+    if flyHumanoid and flyHumanoid.Parent then
+        flyHumanoid.PlatformStand = false
+        if flyOriginalAutoRotate ~= nil then
+            flyHumanoid.AutoRotate = flyOriginalAutoRotate
+        end
+    end
+    flyHumanoid = nil
+    flyOriginalAutoRotate = nil
+
+    if workspace.CurrentCamera then
+        workspace.CurrentCamera.CameraType = Enum.CameraType.Custom
+    end
+    if flyEnabledNoclip then
+        toggleNoclip(false, true)
+        flyEnabledNoclip = false
+    end
+end
+
+table.insert(connections, LocalPlayer.CharacterAdded:Connect(function()
+    if UI.flyToggle and UI.flyToggle.CurrentValue then
+        StopFly()
+        task.delay(0.2, function()
+            if UI.flyToggle and UI.flyToggle.CurrentValue then
+                StartFly()
+            end
+        end)
+    end
+end))
+
+-- ===== WALKSPEED =====
+function UI.walkSpeed.cleanup(restoreOriginal)
+    UI.walkSpeed.token = UI.walkSpeed.token + 1
+    for _, connection in ipairs(UI.walkSpeed.connections) do
+        connection:Disconnect()
+    end
+    table.clear(UI.walkSpeed.connections)
+
+    local humanoid = UI.walkSpeed.humanoid
+    if restoreOriginal and humanoid and humanoid.Parent and UI.walkSpeed.originalSpeed then
+        UI.walkSpeed.changingSpeed = true
+        humanoid.WalkSpeed = UI.walkSpeed.originalSpeed
+        UI.walkSpeed.changingSpeed = false
+    end
+
+    UI.walkSpeed.humanoid = nil
+    UI.walkSpeed.originalSpeed = nil
+end
+
+function UI.walkSpeed.applyCharacter(character)
+    UI.walkSpeed.cleanup(false)
+    UI.walkSpeed.token = UI.walkSpeed.token + 1
+    local token = UI.walkSpeed.token
+    local humanoid = character:FindFirstChildOfClass("Humanoid") or character:WaitForChild("Humanoid", 10)
+    if not humanoid or token ~= UI.walkSpeed.token or not UI.walkSpeed.enabled then
+        return
+    end
+
+    UI.walkSpeed.humanoid = humanoid
+    UI.walkSpeed.originalSpeed = humanoid.WalkSpeed
+
+    local function updateSpeed()
+        if not humanoid.Parent or not UI.walkSpeed.enabled then return end
+        UI.walkSpeed.changingSpeed = true
+        humanoid.WalkSpeed = UI.walkSpeed.value
+        UI.walkSpeed.changingSpeed = false
+    end
+
+    table.insert(UI.walkSpeed.connections, humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+        if UI.walkSpeed.enabled
+            and not UI.walkSpeed.changingSpeed
+            and humanoid.WalkSpeed ~= UI.walkSpeed.value
+        then
+            updateSpeed()
+        end
+    end))
+    updateSpeed()
+end
+
+function UI.walkSpeed.setEnabled(value)
+    UI.walkSpeed.enabled = value == true
+    if not UI.walkSpeed.enabled then
+        UI.walkSpeed.cleanup(true)
+        return
+    end
+
+    if LocalPlayer.Character then
+        task.spawn(UI.walkSpeed.applyCharacter, LocalPlayer.Character)
+    end
+end
+
+function UI.walkSpeed.setValue(value)
+    UI.walkSpeed.value = math.clamp(tonumber(value) or 24, 8, 100)
+    local humanoid = UI.walkSpeed.humanoid
+    if UI.walkSpeed.enabled and humanoid and humanoid.Parent then
+        UI.walkSpeed.changingSpeed = true
+        humanoid.WalkSpeed = UI.walkSpeed.value
+        UI.walkSpeed.changingSpeed = false
+    end
+end
+
+table.insert(connections, LocalPlayer.CharacterAdded:Connect(function(character)
+    UI.walkSpeed.cleanup(false)
+    if UI.walkSpeed.enabled then
+        task.spawn(UI.walkSpeed.applyCharacter, character)
+    end
+end))
 
 
 -- ===== SPECTATE =====
@@ -1266,6 +3021,9 @@ local function addESP(p)
     if p == LocalPlayer then return end
     local ch = p.Character
     if not ch or espHL[p] then return end
+    local head = ch:FindFirstChild("Head") or ch:FindFirstChild("HumanoidRootPart")
+    if not head then return end
+
     local h = Instance.new("Highlight")
     h.FillColor = ESP_COLOR
     h.OutlineColor = Color3.new(0, 0, 0)
@@ -1274,14 +3032,85 @@ local function addESP(p)
     h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
     h.Adornee = ch
     h.Parent = ch
-    espHL[p] = h
+
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "MariESPInfo"
+    billboard.Adornee = head
+    billboard.Size = UDim2.fromOffset(240, 64)
+    billboard.StudsOffset = Vector3.new(0, 4.4, 0)
+    billboard.AlwaysOnTop = true
+    billboard.MaxDistance = espDistance
+    billboard.Parent = ch
+
+    local nameLabel = Instance.new("TextLabel")
+    nameLabel.Size = UDim2.new(1, 0, 0, 25)
+    nameLabel.BackgroundTransparency = 1
+    nameLabel.Font = Enum.Font.GothamBold
+    nameLabel.TextColor3 = Color3.new(1, 1, 1)
+    nameLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+    nameLabel.TextStrokeTransparency = 0
+    nameLabel.TextSize = 15
+    nameLabel.Parent = billboard
+
+    local usernameLabel = Instance.new("TextLabel")
+    usernameLabel.Position = UDim2.fromOffset(0, 22)
+    usernameLabel.Size = UDim2.new(1, 0, 0, 18)
+    usernameLabel.BackgroundTransparency = 1
+    usernameLabel.Font = Enum.Font.GothamBold
+    usernameLabel.Text = "(@" .. p.Name .. ")"
+    usernameLabel.TextColor3 = Color3.new(1, 1, 1)
+    usernameLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+    usernameLabel.TextStrokeTransparency = 0
+    usernameLabel.TextSize = 12
+    usernameLabel.Parent = billboard
+
+    local styleLabel = Instance.new("TextLabel")
+    styleLabel.Position = UDim2.fromOffset(0, 40)
+    styleLabel.Size = UDim2.new(1, 0, 0, 20)
+    styleLabel.BackgroundTransparency = 1
+    styleLabel.Font = Enum.Font.GothamBold
+    styleLabel.TextColor3 = ESP_COLOR
+    styleLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+    styleLabel.TextStrokeTransparency = 0
+    styleLabel.TextSize = 13
+    styleLabel.Parent = billboard
+
+    local entry = {character = ch, highlight = h, billboard = billboard, connections = {}}
+    espHL[p] = entry
+
+    local playerData = ch:FindFirstChild("PlayerData")
+    local function updateESPInfo()
+        if not billboard.Parent then return end
+
+        local firstName = playerData and playerData:GetAttribute("FirstName")
+        local lastName = playerData and playerData:GetAttribute("LastName")
+        local roleplayName = table.concat({firstName or "", lastName or ""}, " "):match("^%s*(.-)%s*$")
+        if roleplayName == "" then
+            roleplayName = p.DisplayName
+        end
+
+        nameLabel.Text = roleplayName
+        styleLabel.Text = "[ " .. tostring(playerData and playerData:GetAttribute("CombatStyle") or "Unknown") .. " ]"
+    end
+
+    updateESPInfo()
+    if playerData then
+        for _, attribute in ipairs({"FirstName", "LastName", "CombatStyle"}) do
+            table.insert(entry.connections, playerData:GetAttributeChangedSignal(attribute):Connect(updateESPInfo))
+        end
+    end
 end
 
 local function remESP(p)
-    if espHL[p] then
-        espHL[p]:Destroy()
-        espHL[p] = nil
+    local entry = espHL[p]
+    if not entry then return end
+
+    for _, connection in ipairs(entry.connections) do
+        connection:Disconnect()
     end
+    if entry.highlight then entry.highlight:Destroy() end
+    if entry.billboard then entry.billboard:Destroy() end
+    espHL[p] = nil
 end
 
 local function clearESP()
@@ -1314,12 +3143,28 @@ table.insert(connections, Players.PlayerRemoving:Connect(remESP))
 
 table.insert(connections, RunService.Heartbeat:Connect(function()
     if espEnabled then
+        local localCharacter = LocalPlayer.Character
+        local localRoot = localCharacter and localCharacter:FindFirstChild("HumanoidRootPart")
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= LocalPlayer then
-                if p.Character and not espHL[p] then
-                    addESP(p)
-                elseif not p.Character and espHL[p] then
+                local entry = espHL[p]
+                if entry and entry.character ~= p.Character then
                     remESP(p)
+                    entry = nil
+                end
+                if p.Character and not entry then
+                    addESP(p)
+                    entry = espHL[p]
+                end
+                if entry then
+                    local targetRoot = entry.character and entry.character:FindFirstChild("HumanoidRootPart")
+                    local inRange = localRoot
+                        and targetRoot
+                        and (localRoot.Position - targetRoot.Position).Magnitude <= espDistance
+                        or false
+                    entry.highlight.Enabled = inRange
+                    entry.billboard.Enabled = inRange
+                    entry.billboard.MaxDistance = espDistance
                 end
             end
         end
@@ -1330,6 +3175,185 @@ local function setEspEnabled(state)
     espEnabled = state
     refreshESP()
     createNotification("ESP", state and "Enabled" or "Disabled")
+end
+
+local function setEspDistance(value)
+    espDistance = math.clamp(tonumber(value) or 500, 50, 2000)
+    for _, entry in pairs(espHL) do
+        if entry.billboard then
+            entry.billboard.MaxDistance = espDistance
+        end
+    end
+end
+
+-- ===== LOCAL HP + M2 COOLDOWN =====
+UI.hpM2Cooldown.module = require(ReplicatedStorage.CombatSystemClient.Combat.Base.M2)
+UI.hpM2Cooldown.config = require(ReplicatedStorage.Shared.Config.CombatConfig)
+
+function UI.hpM2Cooldown.readUpvalueOfType(callback, index, expectedType)
+    local getUpvalue = debug and debug.getupvalue or getupvalue
+    if typeof(getUpvalue) ~= "function" then
+        return nil
+    end
+
+    local success, first, second = pcall(getUpvalue, callback, index)
+    if not success then
+        return nil
+    end
+    if typeof(second) == expectedType then
+        return second
+    end
+    if typeof(first) == expectedType then
+        return first
+    end
+    return nil
+end
+
+function UI.hpM2Cooldown.getDuration(character)
+    local playerData = character and character:FindFirstChild("PlayerData")
+    local style = playerData and playerData:GetAttribute("CombatStyle") or "default"
+    return UI.hpM2Cooldown.config.GetStyleM2Cooldown(style)
+end
+
+function UI.hpM2Cooldown.getExactRemaining()
+    if not UI.hpM2Cooldown.schedule then
+        UI.hpM2Cooldown.schedule = UI.hpM2Cooldown.readUpvalueOfType(
+            UI.hpM2Cooldown.module.OnM2Activated,
+            11,
+            "function"
+        )
+        if not UI.hpM2Cooldown.schedule then
+            return nil
+        end
+    end
+
+    local startedAt = UI.hpM2Cooldown.readUpvalueOfType(UI.hpM2Cooldown.schedule, 7, "number")
+    local duration = UI.hpM2Cooldown.readUpvalueOfType(UI.hpM2Cooldown.schedule, 8, "number")
+    if startedAt and duration then
+        return math.max(0, duration - (time() - startedAt))
+    end
+
+    return nil
+end
+
+function UI.hpM2Cooldown.destroyGui()
+    if UI.hpM2Cooldown.gui then
+        UI.hpM2Cooldown.gui:Destroy()
+        UI.hpM2Cooldown.gui = nil
+    end
+end
+
+function UI.hpM2Cooldown.createGui(character)
+    UI.hpM2Cooldown.destroyGui()
+
+    local head = character and (character:FindFirstChild("Head") or character:WaitForChild("Head", 5))
+    if not head or not UI.hpM2Cooldown.enabled then
+        return
+    end
+
+    local gui = Instance.new("BillboardGui")
+    gui.Name = "MariHpM2Cooldown"
+    gui.Adornee = head
+    gui.Size = UDim2.fromOffset(210, 48)
+    gui.StudsOffset = Vector3.new(0, 2.3, 0)
+    gui.AlwaysOnTop = true
+    gui.MaxDistance = 250
+    gui.Parent = head
+
+    local hpLabel = Instance.new("TextLabel")
+    hpLabel.Name = "HP"
+    hpLabel.Size = UDim2.new(1, 0, 0.5, 0)
+    hpLabel.BackgroundTransparency = 1
+    hpLabel.Font = Enum.Font.GothamBold
+    hpLabel.TextColor3 = Color3.fromRGB(80, 235, 125)
+    hpLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+    hpLabel.TextStrokeTransparency = 0
+    hpLabel.TextSize = 15
+    hpLabel.Parent = gui
+
+    local cooldownLabel = Instance.new("TextLabel")
+    cooldownLabel.Name = "M2Cooldown"
+    cooldownLabel.Position = UDim2.fromScale(0, 0.5)
+    cooldownLabel.Size = UDim2.new(1, 0, 0.5, 0)
+    cooldownLabel.BackgroundTransparency = 1
+    cooldownLabel.Font = Enum.Font.GothamBold
+    cooldownLabel.TextStrokeColor3 = Color3.new(0, 0, 0)
+    cooldownLabel.TextStrokeTransparency = 0
+    cooldownLabel.TextSize = 14
+    cooldownLabel.Parent = gui
+
+    UI.hpM2Cooldown.gui = gui
+end
+
+function UI.hpM2Cooldown.update()
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local head = character and character:FindFirstChild("Head")
+    if not character or not humanoid or not head then
+        UI.hpM2Cooldown.destroyGui()
+        return
+    end
+
+    if not UI.hpM2Cooldown.gui or UI.hpM2Cooldown.gui.Adornee ~= head then
+        UI.hpM2Cooldown.createGui(character)
+    end
+    if not UI.hpM2Cooldown.gui then
+        return
+    end
+
+    local hpLabel = UI.hpM2Cooldown.gui:FindFirstChild("HP")
+    local cooldownLabel = UI.hpM2Cooldown.gui:FindFirstChild("M2Cooldown")
+    if not hpLabel or not cooldownLabel then
+        return
+    end
+
+    local healthRatio = math.clamp(humanoid.Health / math.max(humanoid.MaxHealth, 1), 0, 1)
+    hpLabel.Text = string.format("HP: %d / %d", math.ceil(humanoid.Health), math.ceil(humanoid.MaxHealth))
+    hpLabel.TextColor3 = Color3.fromHSV(healthRatio * 0.32, 0.75, 0.95)
+
+    local coolingDown = character:GetAttribute("M2Cooldown") == true
+    local remaining = UI.hpM2Cooldown.getExactRemaining()
+    if coolingDown and not UI.hpM2Cooldown.wasCoolingDown then
+        UI.hpM2Cooldown.fallbackStartedAt = time()
+    elseif not coolingDown then
+        UI.hpM2Cooldown.fallbackStartedAt = nil
+    end
+    UI.hpM2Cooldown.wasCoolingDown = coolingDown
+
+    if remaining == nil and coolingDown then
+        UI.hpM2Cooldown.fallbackStartedAt = UI.hpM2Cooldown.fallbackStartedAt or time()
+        remaining = math.max(
+            0,
+            UI.hpM2Cooldown.getDuration(character) - (time() - UI.hpM2Cooldown.fallbackStartedAt)
+        )
+    end
+
+    if remaining and remaining > 0 then
+        cooldownLabel.Text = string.format("M2: %.1fs", remaining)
+        cooldownLabel.TextColor3 = Color3.fromRGB(255, 105, 105)
+    else
+        cooldownLabel.Text = "M2: READY"
+        cooldownLabel.TextColor3 = Color3.fromRGB(90, 235, 135)
+    end
+    UI.hpM2Cooldown.gui.Enabled = humanoid.Health > 0
+end
+
+function UI.hpM2Cooldown.toggle(state)
+    UI.hpM2Cooldown.enabled = state
+    if UI.hpM2Cooldown.connection then
+        UI.hpM2Cooldown.connection:Disconnect()
+        UI.hpM2Cooldown.connection = nil
+    end
+
+    UI.hpM2Cooldown.fallbackStartedAt = nil
+    UI.hpM2Cooldown.wasCoolingDown = false
+    if not state then
+        UI.hpM2Cooldown.destroyGui()
+        return
+    end
+
+    UI.hpM2Cooldown.update()
+    UI.hpM2Cooldown.connection = RunService.Heartbeat:Connect(UI.hpM2Cooldown.update)
 end
 
 -- ===== JETPACK =====
@@ -1381,6 +3405,496 @@ function jetpack.toggle(state)
             0
         )
     end)
+end
+
+-- ===== BASKETBALL AUTO GREEN =====
+function UI.autoGreen.isHoldingBasketball()
+    local character = LocalPlayer.Character
+    if not character then return false end
+    return character:GetAttribute("ItemEquipped") == "Basketball"
+        and character:GetAttribute("ItemPhase") == "Equipped"
+        or character:GetAttribute("BasketballHoldingBall") == true
+end
+
+function UI.autoGreen.isGreenColor(color)
+    return color.G >= 0.7
+        and color.R <= 0.4
+        and color.B <= 0.55
+end
+
+function UI.autoGreen.findMeterParts()
+    local character = LocalPlayer.Character
+    if not character then return nil end
+    local roots = {character, LocalPlayer:FindFirstChild("PlayerGui")}
+
+    for _, root in ipairs(roots) do
+        if root then
+            local billboard = root:FindFirstChild("BasketballShotBillboard", true)
+            local meter = billboard and billboard:FindFirstChild("Meter", true)
+            local marker = meter and meter:FindFirstChild("Needle", true)
+            if billboard and meter and marker and meter.Visible and billboard.Enabled then
+                for _, child in ipairs(meter:GetChildren()) do
+                    if child:IsA("Frame")
+                        and UI.autoGreen.isGreenColor(child.BackgroundColor3)
+                        and child.Size.Y.Scale > 0
+                    then
+                        return marker, child
+                    end
+                end
+            end
+
+            billboard = root:FindFirstChild("BasketballShotMeterBar", true)
+            local track = billboard and billboard:FindFirstChild("Track", true)
+            marker = track and track:FindFirstChild("Cap", true)
+            local greenWindow = track and track:FindFirstChild("Window", true)
+            if billboard
+                and track
+                and marker
+                and greenWindow
+                and billboard.Enabled
+                and greenWindow.Size.Y.Scale > 0
+            then
+                return marker, greenWindow
+            end
+        end
+    end
+    return nil
+end
+
+function UI.autoGreen.step()
+    if not UI.autoGreen.enabled or not UI.autoGreen.isHoldingBasketball() then
+        UI.autoGreen.releasedForShot = false
+        UI.autoGreen.activeMarker = nil
+        UI.autoGreen.readyAt = 0
+        return
+    end
+
+    local marker, greenWindow = UI.autoGreen.findMeterParts()
+    if not marker or not greenWindow then
+        UI.autoGreen.releasedForShot = false
+        UI.autoGreen.activeMarker = nil
+        UI.autoGreen.readyAt = 0
+        return
+    end
+    if UI.autoGreen.activeMarker ~= marker then
+        UI.autoGreen.activeMarker = marker
+        UI.autoGreen.readyAt = os.clock() + 0.06
+        UI.autoGreen.releasedForShot = false
+        return
+    end
+    if os.clock() < UI.autoGreen.readyAt or greenWindow.AbsoluteSize.Y < 2 then
+        return
+    end
+    if UI.autoGreen.releasedForShot or not UserInputService:IsKeyDown(Enum.KeyCode.E) then
+        return
+    end
+
+    local markerCenter = marker.AbsolutePosition.Y + marker.AbsoluteSize.Y * 0.5
+    local greenTop = greenWindow.AbsolutePosition.Y
+    local greenBottom = greenTop + greenWindow.AbsoluteSize.Y
+    if greenTop - 1 <= markerCenter and markerCenter <= greenBottom + 1 then
+        UI.autoGreen.releasedForShot = true
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+    end
+end
+
+function UI.autoGreen.toggle(state)
+    UI.autoGreen.enabled = state == true
+    UI.autoGreen.releasedForShot = false
+    UI.autoGreen.activeMarker = nil
+    UI.autoGreen.readyAt = 0
+    if UI.autoGreen.connection then
+        UI.autoGreen.connection:Disconnect()
+        UI.autoGreen.connection = nil
+    end
+    if UI.autoGreen.enabled then
+        UI.autoGreen.connection = RunService.RenderStepped:Connect(UI.autoGreen.step)
+    end
+end
+
+-- ===== 61-KEY PIANO AUTO PLAY =====
+function UI.autoPiano.isAtPiano()
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    return character ~= nil
+        and character:GetAttribute("PlayingInstrument") == "Piano"
+        and humanoid ~= nil
+        and humanoid.Sit
+end
+
+function UI.autoPiano.getInput(noteIndex)
+    local character = UI.autoPiano.keyLayout:sub(noteIndex, noteIndex)
+    if character == "" then return nil end
+
+    if character:match("%a") then
+        return Enum.KeyCode[character:upper()], character == character:upper()
+    end
+    local keyName = UI.autoPiano.digitKeys[character]
+    if keyName then
+        return Enum.KeyCode[keyName], false
+    end
+    keyName = UI.autoPiano.symbolKeys[character]
+    if keyName then
+        return Enum.KeyCode[keyName], true
+    end
+    return nil
+end
+
+function UI.autoPiano.pressNote(noteIndex, token)
+    local keyCode, needsShift = UI.autoPiano.getInput(noteIndex)
+    if not keyCode or token ~= UI.autoPiano.token then return end
+
+    if needsShift then
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.LeftShift, false, game)
+    end
+    VirtualInputManager:SendKeyEvent(true, keyCode, false, game)
+    task.wait(0.025)
+    VirtualInputManager:SendKeyEvent(false, keyCode, false, game)
+    if needsShift then
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.LeftShift, false, game)
+    end
+end
+
+function UI.autoPiano.stop()
+    UI.autoPiano.token = UI.autoPiano.token + 1
+    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.LeftShift, false, game)
+end
+
+function UI.autoPiano.toggle(state)
+    UI.autoPiano.enabled = state == true
+    if not UI.autoPiano.enabled then
+        UI.autoPiano.stop()
+    end
+end
+
+function UI.autoPiano.playSelected()
+    if not UI.autoPiano.enabled then
+        createNotification("Auto Play Piano", "Enable Auto Play Piano first.")
+        return
+    end
+    if not UI.autoPiano.isAtPiano() then
+        createNotification("Auto Play Piano", "Sit at and activate a piano first.")
+        return
+    end
+
+    local song = UI.autoPiano.songs[UI.autoPiano.selectedSong]
+    if not song then
+        createNotification("Auto Play Piano", "Select a valid song.")
+        return
+    end
+
+    UI.autoPiano.stop()
+    local token = UI.autoPiano.token
+    task.spawn(function()
+        if song.sheet then
+            local position = 1
+            while position <= #song.sheet do
+                if token ~= UI.autoPiano.token or not UI.autoPiano.enabled then return end
+                if not UI.autoPiano.isAtPiano() then
+                    UI.autoPiano.stop()
+                    createNotification("Auto Play Piano", "Playback stopped because you left the piano.")
+                    return
+                end
+
+                local character = song.sheet:sub(position, position)
+                if character == "|" then
+                    task.wait(song.barRest)
+                elseif character == "[" then
+                    local closePosition = song.sheet:find("]", position + 1, true)
+                    if closePosition then
+                        for chordPosition = position + 1, closePosition - 1 do
+                            local noteIndex = UI.autoPiano.keyLayout:find(song.sheet:sub(chordPosition, chordPosition), 1, true)
+                            if noteIndex then
+                                UI.autoPiano.pressNote(noteIndex, token)
+                            end
+                        end
+                        task.wait(song.step)
+                        position = closePosition
+                    end
+                elseif character ~= " " then
+                    local noteIndex = UI.autoPiano.keyLayout:find(character, 1, true)
+                    if noteIndex then
+                        UI.autoPiano.pressNote(noteIndex, token)
+                        task.wait(song.step)
+                    end
+                end
+                position = position + 1
+            end
+        else
+            for event in song.sequence:gmatch("%S+") do
+                if token ~= UI.autoPiano.token or not UI.autoPiano.enabled then return end
+                if not UI.autoPiano.isAtPiano() then
+                    UI.autoPiano.stop()
+                    createNotification("Auto Play Piano", "Playback stopped because you left the piano.")
+                    return
+                end
+
+                local noteText, beatText = event:match("^([^:]+):?(.*)$")
+                local beats = tonumber(beatText) or 1
+                local startedAt = os.clock()
+                for note in noteText:gmatch("[^+]+") do
+                    UI.autoPiano.pressNote(tonumber(note), token)
+                end
+                local remaining = 60 / song.tempo * beats - (os.clock() - startedAt)
+                if remaining > 0 then
+                    task.wait(remaining)
+                end
+            end
+        end
+        if token == UI.autoPiano.token and UI.autoPiano.enabled then
+            createNotification("Auto Play Piano", "Finished: " .. UI.autoPiano.selectedSong)
+        end
+    end)
+end
+
+-- ===== RHYTHM AUTO PERFECT =====
+if typeof(_G.__mariHubRhythmAutoPerfectCleanup) == "function" then
+    pcall(_G.__mariHubRhythmAutoPerfectCleanup)
+end
+
+function rhythmAutoPerfect.releaseSession(session)
+    if not session or typeof(session._handleLaneRelease) ~= "function" then
+        table.clear(rhythmAutoPerfect.heldNotes)
+        table.clear(rhythmAutoPerfect.heldLanes)
+        table.clear(rhythmAutoPerfect.tapReleaseAt)
+        return
+    end
+
+    for lane = 1, session._lanes or 0 do
+        if session._laneTouchActive then
+            session._laneTouchActive[lane] = false
+        end
+        if session._laneKeyDown and session._laneKeyDown[lane] then
+            pcall(session._handleLaneRelease, session, lane)
+        end
+    end
+    table.clear(rhythmAutoPerfect.heldNotes)
+    table.clear(rhythmAutoPerfect.heldLanes)
+    table.clear(rhythmAutoPerfect.tapReleaseAt)
+end
+
+function rhythmAutoPerfect.fireLanePressed(session, lane, hitTime, claimed)
+    if not session._onLanePressedCallbacks then
+        return
+    end
+
+    for _, callback in pairs(session._onLanePressedCallbacks) do
+        if callback then
+            pcall(callback, lane, hitTime, claimed)
+        end
+    end
+end
+
+function rhythmAutoPerfect.beginHold(session, note)
+    rhythmAutoPerfect.tapReleaseAt[note.lane] = nil
+    if session._laneTouchActive then
+        session._laneTouchActive[note.lane] = true
+    end
+    if session._laneKeyDown then
+        session._laneKeyDown[note.lane] = true
+    end
+    if typeof(session._syncReceptorVisual) == "function" then
+        pcall(session._syncReceptorVisual, session, note.lane)
+    end
+    rhythmAutoPerfect.heldNotes[note] = true
+    rhythmAutoPerfect.heldLanes[note.lane] = note
+end
+
+function rhythmAutoPerfect.endHold(session, note)
+    if session._laneTouchActive then
+        session._laneTouchActive[note.lane] = false
+    end
+    if session._laneKeyDown then
+        session._laneKeyDown[note.lane] = false
+    end
+
+    if not note.resolved and note.holding then
+        pcall(session._onReleaseLane, session, note.lane, note.t + note.len)
+    end
+    if typeof(session._syncReceptorVisual) == "function" then
+        pcall(session._syncReceptorVisual, session, note.lane)
+    end
+    rhythmAutoPerfect.heldNotes[note] = nil
+    if rhythmAutoPerfect.heldLanes[note.lane] == note then
+        rhythmAutoPerfect.heldLanes[note.lane] = nil
+    end
+end
+
+function rhythmAutoPerfect.pressTap(session, note, now)
+    if rhythmAutoPerfect.tapReleaseAt[note.lane]
+        and not rhythmAutoPerfect.heldLanes[note.lane]
+    then
+        if session._laneTouchActive then
+            session._laneTouchActive[note.lane] = false
+        end
+        if session._laneKeyDown then
+            session._laneKeyDown[note.lane] = false
+        end
+        if typeof(session._syncReceptorVisual) == "function" then
+            pcall(session._syncReceptorVisual, session, note.lane)
+        end
+    end
+
+    if session._laneTouchActive then
+        session._laneTouchActive[note.lane] = true
+    end
+    if session._laneKeyDown then
+        session._laneKeyDown[note.lane] = true
+    end
+    if typeof(session._syncReceptorVisual) == "function" then
+        pcall(session._syncReceptorVisual, session, note.lane)
+    end
+    rhythmAutoPerfect.tapReleaseAt[note.lane] = now + 0.045
+end
+
+function rhythmAutoPerfect.releaseFinishedTaps(session, now)
+    for lane, releaseAt in pairs(rhythmAutoPerfect.tapReleaseAt) do
+        if now >= releaseAt then
+            if not rhythmAutoPerfect.heldLanes[lane] then
+                if session._laneTouchActive then
+                    session._laneTouchActive[lane] = false
+                end
+                if session._laneKeyDown then
+                    session._laneKeyDown[lane] = false
+                end
+                if typeof(session._syncReceptorVisual) == "function" then
+                    pcall(session._syncReceptorVisual, session, lane)
+                end
+            end
+            rhythmAutoPerfect.tapReleaseAt[lane] = nil
+        end
+    end
+end
+
+function rhythmAutoPerfect.findSession()
+    if rhythmAutoPerfect.service then
+        local session = rawget(rhythmAutoPerfect.service, "_session")
+        if session and not rawget(session, "_destroyed") then
+            return session
+        end
+        return nil
+    end
+
+    local getGc = getgc
+    if typeof(getGc) ~= "function" then
+        return nil
+    end
+
+    if os.clock() < rhythmAutoPerfect.nextScanAt then
+        return nil
+    end
+    rhythmAutoPerfect.nextScanAt = os.clock() + 0.5
+
+    local success, objects = pcall(getGc, true)
+    if not success then
+        return nil
+    end
+
+    for _, object in ipairs(objects) do
+        if type(object) == "table" then
+            local session = rawget(object, "_session")
+            if type(session) == "table"
+                and type(rawget(session, "_liveNotes")) == "table"
+                and typeof(session._onPressLane) == "function"
+                and typeof(session._onReleaseLane) == "function"
+                and not rawget(session, "_destroyed")
+            then
+                rhythmAutoPerfect.service = object
+                return session
+            end
+        end
+    end
+
+    rhythmAutoPerfect.service = nil
+    return nil
+end
+
+function rhythmAutoPerfect.step()
+    local session = rhythmAutoPerfect.findSession()
+    if session ~= rhythmAutoPerfect.session then
+        rhythmAutoPerfect.releaseSession(rhythmAutoPerfect.session)
+        rhythmAutoPerfect.session = session
+    end
+    if not session or not session._started or session._destroyed then
+        return
+    end
+
+    local success, now = pcall(session._now, session)
+    if not success or typeof(now) ~= "number" then
+        return
+    end
+
+    rhythmAutoPerfect.releaseFinishedTaps(session, now)
+
+    for _, note in ipairs(session._liveNotes) do
+        if rhythmAutoPerfect.heldNotes[note]
+            and (note.resolved or now >= note.t + note.len - 0.02)
+        then
+            rhythmAutoPerfect.endHold(session, note)
+        end
+
+        if not note.resolved and not note.hit and now >= note.t then
+            -- Pass the chart timestamp so the engine judges zero timing error.
+            local pressed, claimed = pcall(session._onPressLane, session, note.lane, note.t)
+            if pressed and claimed then
+                rhythmAutoPerfect.fireLanePressed(session, note.lane, note.t, true)
+
+                if note.len > 0 and note.holding then
+                    rhythmAutoPerfect.beginHold(session, note)
+                elseif note.len <= 0 then
+                    rhythmAutoPerfect.pressTap(session, note, now)
+                end
+            end
+        end
+
+        if not note.resolved then
+            if note.len > 0
+                and note.hit
+                and note.holding
+                and not rhythmAutoPerfect.heldNotes[note]
+                and now >= note.t + note.len
+            then
+                pcall(session._onReleaseLane, session, note.lane, note.t + note.len)
+            end
+        end
+    end
+
+end
+
+function rhythmAutoPerfect.toggle(state, silent)
+    rhythmAutoPerfect.enabled = state
+
+    if rhythmAutoPerfect.connection then
+        rhythmAutoPerfect.connection:Disconnect()
+        rhythmAutoPerfect.connection = nil
+    end
+
+    if not state then
+        rhythmAutoPerfect.releaseSession(rhythmAutoPerfect.session)
+        rhythmAutoPerfect.session = nil
+        rhythmAutoPerfect.service = nil
+        rhythmAutoPerfect.nextScanAt = 0
+        return
+    end
+
+    if typeof(getgc) ~= "function" then
+        rhythmAutoPerfect.enabled = false
+        if not silent then
+            createNotification("Auto Perfect", "This executor does not support getgc.")
+        end
+        task.defer(function()
+            if UI.rhythmAutoPerfectToggle then
+                UI.rhythmAutoPerfectToggle:Set(false)
+            end
+        end)
+        return
+    end
+
+    rhythmAutoPerfect.connection = RunService.RenderStepped:Connect(rhythmAutoPerfect.step)
+end
+
+_G.__mariHubRhythmAutoPerfectCleanup = function()
+    rhythmAutoPerfect.toggle(false, true)
 end
 
 -- ===== RETURN BY DEATH =====
@@ -1578,6 +4092,7 @@ local function refreshConfigDropdowns()
 end
 
 local function collectSettings()
+    local uiPositions = Window:GetSavedPositions()
     local settings = {
         autoParryEnabled = autoParryEnabled,
         pingCompensationEnabled = pingCompensationEnabled,
@@ -1586,21 +4101,39 @@ local function collectSettings()
         noDodgeCooldownEnabled = noDodgeCooldownEnabled,
         antiStunEnabled = antiStunEnabled,
         espEnabled = espEnabled,
-        infCamZoomEnabled = infCamZoomEnabled,
+        espDistance = espDistance,
+        hpM2CooldownEnabled = UI.hpM2Cooldown.enabled,
+        infCamZoomEnabled = UI.infCamZoom.enabled,
         jetpackEnabled = jetpack.enabled,
+        autoGreenEnabled = UI.autoGreen.enabled,
+        autoPianoEnabled = UI.autoPiano.enabled,
+        pianoSong = UI.autoPiano.selectedSong,
         returnByDeathEnabled = returnByDeath.enabled,
+        rhythmAutoPerfectEnabled = rhythmAutoPerfect.enabled,
         healthBarsVisible = healthBarsVisible,
         flingActive = flingActive,
         flingPower = flingPower,
+        selectedFlingDuration = selectedFling.duration,
         namesVisible = namesVisible,
         antiFlingEnabled = antiFlingEnabled,
         antiVoidEnabled = antiVoidEnabled,
         flying = flying,
         flySpeed = flySpeed,
+        walkSpeedEnabled = UI.walkSpeed.enabled,
+        walkSpeedValue = UI.walkSpeed.value,
         noclipEnabled = noclipEnabled,
         blinkOn = blinkOn,
         blinkDist = blinkDist,
         heartAutoEnabled = _G.__heartAuto == true,
+        uiColorPreset = UI.uiColorDropdown and UI.uiColorDropdown.CurrentOption or UI.colorPreset,
+        uiToggleKeybind = UI.uiToggleKeybind and UI.uiToggleKeybind.CurrentKeybind or UI.toggleKeybind,
+        uiRestoreButtonEnabled = UI.restoreButtonToggle ~= nil
+            and UI.restoreButtonToggle.CurrentValue,
+        uiAnimationsEnabled = UI.animationsToggle ~= nil
+            and UI.animationsToggle.CurrentValue,
+        uiScalePercent = UI.uiScaleSlider and UI.uiScaleSlider.CurrentValue or UI.scalePercent,
+        uiHubPosition = uiPositions.hub,
+        uiStarPosition = uiPositions.star,
     }
     for name, entry in pairs(keybindRegistry) do
         settings[name] = entry.key
@@ -1694,21 +4227,71 @@ local function applySettings(settings)
     setToggleIfChanged(UI.noDodgeCooldownToggle, settings.noDodgeCooldownEnabled == true)
     setToggleIfChanged(UI.antiStunToggle, settings.antiStunEnabled == true)
     setToggleIfChanged(UI.espToggle, settings.espEnabled == true)
+    setToggleIfChanged(UI.espDistanceSlider, settings.espDistance or espDistance)
+    setToggleIfChanged(UI.hpM2CooldownToggle, settings.hpM2CooldownEnabled == true)
     setToggleIfChanged(UI.infCamZoomToggle, settings.infCamZoomEnabled == true)
     setToggleIfChanged(UI.jetpackToggle, settings.jetpackEnabled == true)
+    setToggleIfChanged(UI.autoGreenToggle, settings.autoGreenEnabled == true)
+    setToggleIfChanged(UI.autoPianoToggle, settings.autoPianoEnabled == true)
+    if type(settings.pianoSong) == "string" and UI.autoPiano.songs[settings.pianoSong] then
+        UI.autoPiano.selectedSong = settings.pianoSong
+        if UI.pianoSongDropdown and UI.pianoSongDropdown.CurrentOption ~= settings.pianoSong then
+            UI.pianoSongDropdown:Set(settings.pianoSong)
+        end
+    end
     setToggleIfChanged(UI.returnByDeathToggle, settings.returnByDeathEnabled == true)
+    setToggleIfChanged(UI.rhythmAutoPerfectToggle, settings.rhythmAutoPerfectEnabled == true)
     setToggleIfChanged(UI.healthBarsToggle, settings.healthBarsVisible == true)
     setToggleIfChanged(UI.flingToggleRef, settings.flingActive == true)
     setToggleIfChanged(UI.flingPowerSlider, settings.flingPower or flingPower)
+    setToggleIfChanged(UI.flingDurationSlider, settings.selectedFlingDuration or selectedFling.duration)
     setToggleIfChanged(UI.showUsernamesToggle, settings.namesVisible == true)
     setToggleIfChanged(UI.antiFlingToggle, settings.antiFlingEnabled == true)
     setToggleIfChanged(UI.antiVoidToggle, settings.antiVoidEnabled == true)
     setToggleIfChanged(UI.flyToggle, settings.flying == true)
     setToggleIfChanged(UI.flySpeedSlider, settings.flySpeed or flySpeed)
+    setToggleIfChanged(UI.walkSpeedSlider, settings.walkSpeedValue or UI.walkSpeed.value)
+    setToggleIfChanged(UI.walkSpeedToggle, settings.walkSpeedEnabled == true)
     setToggleIfChanged(UI.noclipToggle, settings.noclipEnabled == true)
     setToggleIfChanged(UI.shadowStepToggle, settings.blinkOn == true)
     setToggleIfChanged(UI.shadowStepDistSlider, settings.blinkDist or blinkDist)
     setToggleIfChanged(UI.heartAutoToggle, settings.heartAutoEnabled == true)
+
+    if type(settings.uiColorPreset) == "string" and UI.colorPresets[settings.uiColorPreset] then
+        UI.colorPreset = settings.uiColorPreset
+        if UI.uiColorDropdown.CurrentOption ~= settings.uiColorPreset then
+            UI.uiColorDropdown:Set(settings.uiColorPreset)
+        end
+        Window:SetAccent(UI.colorPresets[settings.uiColorPreset])
+    end
+    if type(settings.uiToggleKeybind) == "string" then
+        UI.toggleKeybind = settings.uiToggleKeybind
+        if UI.uiToggleKeybind.CurrentKeybind ~= settings.uiToggleKeybind then
+            UI.uiToggleKeybind:Set(settings.uiToggleKeybind)
+        end
+        Window:SetToggleKeybind(settings.uiToggleKeybind)
+    end
+    if settings.uiRestoreButtonEnabled ~= nil then
+        UI.restoreButtonEnabled = settings.uiRestoreButtonEnabled == true
+        setToggleIfChanged(UI.restoreButtonToggle, UI.restoreButtonEnabled)
+        Window:SetRestoreEnabled(UI.restoreButtonEnabled)
+    end
+    if settings.uiAnimationsEnabled ~= nil then
+        UI.animationsEnabled = settings.uiAnimationsEnabled == true
+        setToggleIfChanged(UI.animationsToggle, UI.animationsEnabled)
+        Window:SetAnimationsEnabled(UI.animationsEnabled)
+    end
+    if type(settings.uiScalePercent) == "number" then
+        UI.scalePercent = settings.uiScalePercent
+        setToggleIfChanged(UI.uiScaleSlider, settings.uiScalePercent)
+        Window:SetUIScale(settings.uiScalePercent)
+    end
+    if type(settings.uiHubPosition) == "table" or type(settings.uiStarPosition) == "table" then
+        Window:SetSavedPositions({
+            hub = settings.uiHubPosition,
+            star = settings.uiStarPosition,
+        })
+    end
 
     for name, entry in pairs(keybindRegistry) do
         local value = settings[name]
@@ -1757,7 +4340,12 @@ local function loadConfig(name)
         return false
     end
 
-    pcall(applySettings, settings)
+    local applied, applyError = pcall(applySettings, settings)
+    if not applied then
+        warn("MARI-HUB config apply failed: " .. tostring(applyError))
+        createNotification("Config", "Config loaded with an apply error. Check console.")
+        return false
+    end
     createNotification("Config", "Loaded config: " .. (cleanName ~= "" and cleanName or "n/a"))
     return true
 end
@@ -1853,6 +4441,7 @@ local function createToggleWithKeybind(tab, toggleOptions)
     local keybind = tab:CreateKeybind({
         Name = keybindName,
         CurrentKeybind = "None",
+        InlineParent = toggle.Instance,
         CallOnChange = true,
         Callback = function(Key)
             local entry = keybindRegistry[keybindName]
@@ -2027,8 +4616,8 @@ local function toggleAntiStun(state)
 end
 
 -- Combat Tab
-local CombatTab = Window:CreateTab("⚔️ Combat", 4483362458)
-UI.autoParryToggle = createToggleWithKeybind(CombatTab, {
+UI.combatTab = Window:CreateTab("Combat", 4483362458)
+UI.autoParryToggle = createToggleWithKeybind(UI.combatTab, {
     Name = "Auto Parry",
     CurrentValue = false,
     Callback = function(v)
@@ -2044,7 +4633,7 @@ UI.autoParryToggle = createToggleWithKeybind(CombatTab, {
     end
 })
 
-UI.pingCompensationToggle = CombatTab:CreateToggle({
+UI.pingCompensationToggle = UI.combatTab:CreateToggle({
     Name = "Ping Compensation",
     CurrentValue = false,
     Callback = function(v)
@@ -2052,7 +4641,7 @@ UI.pingCompensationToggle = CombatTab:CreateToggle({
     end
 })
 
-UI.autoFaceToggle = CombatTab:CreateToggle({
+UI.autoFaceToggle = UI.combatTab:CreateToggle({
     Name = "Auto Face",
     CurrentValue = false,
     Callback = function(v)
@@ -2063,7 +4652,7 @@ UI.autoFaceToggle = CombatTab:CreateToggle({
     end
 })
 
-UI.infStaminaToggle = CombatTab:CreateToggle({
+UI.infStaminaToggle = UI.combatTab:CreateToggle({
     Name = "Inf Stamina",
     CurrentValue = false,
     Callback = function(v)
@@ -2071,7 +4660,7 @@ UI.infStaminaToggle = CombatTab:CreateToggle({
     end
 })
 
-UI.noDodgeCooldownToggle = CombatTab:CreateToggle({
+UI.noDodgeCooldownToggle = UI.combatTab:CreateToggle({
     Name = "No Dodge Cooldown",
     CurrentValue = false,
     Callback = function(v)
@@ -2079,7 +4668,7 @@ UI.noDodgeCooldownToggle = CombatTab:CreateToggle({
     end
 })
 
-UI.antiStunToggle = CombatTab:CreateToggle({
+UI.antiStunToggle = UI.combatTab:CreateToggle({
     Name = "Anti Stun",
     CurrentValue = false,
     Callback = function(v)
@@ -2087,15 +4676,33 @@ UI.antiStunToggle = CombatTab:CreateToggle({
     end
 })
 
-UI.espToggle = CombatTab:CreateToggle({
+UI.espToggleOptions = {
     Name = "ESP",
     CurrentValue = false,
     Callback = function(v)
         setEspEnabled(v)
     end
-})
+}
 
-UI.healthBarsToggle = CombatTab:CreateToggle({
+UI.espDistanceSliderOptions = {
+    Name = "ESP Distance",
+    Range = {50, 2000},
+    Increment = 50,
+    CurrentValue = 500,
+    Callback = function(value)
+        setEspDistance(value)
+    end,
+}
+
+UI.hpM2CooldownToggleOptions = {
+    Name = "show hp and m2 cooldown",
+    CurrentValue = false,
+    Callback = function(v)
+        UI.hpM2Cooldown.toggle(v)
+    end
+}
+
+UI.healthBarsToggle = UI.combatTab:CreateToggle({
     Name = "Show Healthbars",
     CurrentValue = false,
     Callback = function(v)
@@ -2105,10 +4712,10 @@ UI.healthBarsToggle = CombatTab:CreateToggle({
 
 
 -- ===== FLING TAB =====
-local FlingTab = Window:CreateTab("🚀 Fling", 4483362458)
+UI.flingTab = Window:CreateTab("Fling", 4483362458)
 
 -- Toggle
-UI.flingToggleRef = createToggleWithKeybind(FlingTab, {
+UI.flingToggleRef = createToggleWithKeybind(UI.flingTab, {
     Name = "Enable Fling",
     CurrentValue = false,
     Callback = function(v)
@@ -2119,7 +4726,7 @@ UI.flingToggleRef = createToggleWithKeybind(FlingTab, {
 })
 
 -- Power Slider
-UI.flingPowerSlider = FlingTab:CreateSlider({
+UI.flingPowerSlider = UI.flingTab:CreateSlider({
     Name = "Fling Power",
     Range = {0, 100},
     Increment = 1,
@@ -2129,12 +4736,12 @@ UI.flingPowerSlider = FlingTab:CreateSlider({
     end
 })
 
--- Target Mode Status
-UI.targetStatusLabel = FlingTab:CreateLabel("Target Mode: OFF")
+-- Selected Target Status
+UI.targetStatusLabel = UI.flingTab:CreateLabel("Selected Target: None")
 updateTargetStatusLabel()
 
 -- Target Dropdown
-UI.targetDropdown = FlingTab:CreateDropdown({
+UI.targetDropdown = UI.flingTab:CreateDropdown({
     Name = "Target Player",
     Options = {},
     CurrentOption = "",
@@ -2157,31 +4764,14 @@ UI.targetDropdown = FlingTab:CreateDropdown({
             return
         end
 
-        if not flingActive then
-            if tick() - lastFlingError > 1 then
-                lastFlingError = tick()
-                createNotification("Error", "Fling must be enabled before selecting a target!")
-            end
-
-            task.defer(function()
-                if UI.targetDropdown then
-                    updatingDropdown = true
-                    UI.targetDropdown:Set("")
-                    task.defer(function()
-                        updatingDropdown = false
-                    end)
-                end
-            end)
-
-            return
-        end
-
         for _, p in ipairs(Players:GetPlayers()) do
-    if p.Name == selected then
-        setTarget(p)
-        break
-    end
-end
+            if p.Name == selected then
+                targetPlayer = p
+                updateTargetStatusLabel()
+                createNotification("Target Selected", p.Name)
+                break
+            end
+        end
     end
 })
 
@@ -2212,11 +4802,10 @@ table.insert(connections, Players.PlayerRemoving:Connect(refreshPlayerDropdown))
 
 table.insert(connections, Players.PlayerRemoving:Connect(function(plr)
     if plr == targetPlayer then
+        if selectedFling.running then
+            selectedFling.stop(true)
+        end
         targetPlayer = nil
-
-        local wasTargetMode = targetMode
-        targetMode = false
-
         updateTargetStatusLabel()
 
         if UI.targetDropdown then
@@ -2228,51 +4817,43 @@ table.insert(connections, Players.PlayerRemoving:Connect(function(plr)
         end
 
         createNotification("Target", "Target left the game.")
-
-        if wasTargetMode then
-            createNotification("Target Mode", "OFF")
-        end
     end
 end))
 
--- Clear Target
-FlingTab:CreateButton({
-    Name = "Clear Target",
+UI.flingDurationSlider = UI.flingTab:CreateSlider({
+    Name = "Fling Duration",
+    Range = {0.25, 15},
+    Increment = 0.25,
+    CurrentValue = 1,
+    Callback = function(value)
+        selectedFling.duration = value
+    end,
+})
+
+UI.flingTab:CreateButton({
+    Name = "Fling Selected",
     Callback = function()
-    if not targetPlayer and not targetMode then
-        createNotification("Target", "No target to clear.")
-        return
-    end
-
-    setTarget(nil)
-
-if UI.targetDropdown then
-    updatingDropdown = true
-    UI.targetDropdown:Set("")
-    task.defer(function()
-        updatingDropdown = false
-    end)
- end
-end
+        selectedFling.start()
+    end,
 })
 
 -- Usernames Toggle
-UI.showUsernamesToggle = createToggleWithKeybind(FlingTab, {
+UI.showUsernamesToggleOptions = {
     Name = "Show Usernames",
     CurrentValue = false,
     Callback = function(v)
         setNameTagsVisible(v)
     end
-})
+}
 
 -- Rejoin Button
-FlingTab:CreateButton({
+UI.rejoinButtonOptions = {
     Name = "Rejoin Server",
     Callback = rejoinServer
-})
+}
 
 -- Unload Button
-FlingTab:CreateButton({
+UI.unloadButtonOptions = {
     Name = "Unload Hub",
     Callback = function()
 UI.unloaded = true
@@ -2301,8 +4882,13 @@ healthBarsVisible = false
 healthBarsActive = false
 espEnabled = false
 clearESP()
+UI.hpM2Cooldown.toggle(false)
 jetpack.toggle(false)
+UI.autoGreen.toggle(false)
+UI.autoPiano.toggle(false)
 returnByDeath.toggle(false)
+rhythmAutoPerfect.toggle(false, true)
+_G.__mariHubRhythmAutoPerfectCleanup = nil
 stopAutoFacing()
 _G.__mariHubAutoFaceCleanup = nil
 if LocalPlayer.Character and LocalPlayer.Character:GetAttribute("Blocking") == true then
@@ -2334,6 +4920,9 @@ end
     StopFly()
 end
 
+         -- Restore walkspeed and stop its monitor.
+         UI.walkSpeed.setEnabled(false)
+
          -- Stop fling
         stopFlingLoop()
         stopFlingMonitor()
@@ -2362,12 +4951,8 @@ end
          --stop auto heartbeat
          _G.__heartAuto = false
 
-         --restore camera zoom
-         if infCamZoomEnabled then
-            LocalPlayer.CameraMaxZoomDistance = savedCamMaxZoom or 400
-            infCamZoomEnabled = false
-            savedCamMaxZoom = nil
-         end
+         -- Restore camera zoom and wall collision.
+         UI.infCamZoom.toggle(false, true)
 
 
         -- Disconnect stored connections
@@ -2407,7 +4992,7 @@ end
             Rayfield:Destroy()
         end)
     end
-})
+}
 
 -- ===== HEART AUTO-CLICK =====
 
@@ -2450,9 +5035,15 @@ local function ensureHeartMonitor()
 end
 
 -- ===== MISC TAB =====
-local MiscTab = Window:CreateTab("🛠️ Misc", 4483362458)
+UI.selfTab = Window:CreateTab("Self", 4483362458)
+UI.movementTab = Window:CreateTab("Movement", 4483362458)
+UI.playersTab = Window:CreateTab("Players", 4483362458)
 
-UI.antiFlingToggle = MiscTab:CreateToggle({
+UI.espToggle = UI.playersTab:CreateToggle(UI.espToggleOptions)
+UI.espDistanceSlider = UI.playersTab:CreateSlider(UI.espDistanceSliderOptions)
+UI.showUsernamesToggle = createToggleWithKeybind(UI.playersTab, UI.showUsernamesToggleOptions)
+
+UI.antiFlingToggle = UI.selfTab:CreateToggle({
     Name = "Anti Fling",
     CurrentValue = false,
     Callback = function(v)
@@ -2460,7 +5051,7 @@ UI.antiFlingToggle = MiscTab:CreateToggle({
     end
 })
 
-UI.antiVoidToggle = MiscTab:CreateToggle({
+UI.antiVoidToggle = UI.selfTab:CreateToggle({
     Name = "Anti Void",
     CurrentValue = false,
     Callback = function(v)
@@ -2470,7 +5061,7 @@ UI.antiVoidToggle = MiscTab:CreateToggle({
 
 _G.__heartAuto = false
 
-UI.heartAutoToggle = MiscTab:CreateToggle({
+UI.heartAutoToggle = UI.selfTab:CreateToggle({
     Name = "Auto Heartbeat",
     CurrentValue = false,
     Callback = function(v)
@@ -2481,7 +5072,7 @@ UI.heartAutoToggle = MiscTab:CreateToggle({
     end
 })
 
-UI.flyToggle = createToggleWithKeybind(MiscTab, {
+UI.flyToggle = createToggleWithKeybind(UI.movementTab, {
     Name = "Fly",
     CurrentValue = false,
     Callback = function(v)
@@ -2493,7 +5084,7 @@ UI.flyToggle = createToggleWithKeybind(MiscTab, {
     end
 })
 
-UI.flySpeedSlider = MiscTab:CreateSlider({
+UI.flySpeedSlider = UI.movementTab:CreateSlider({
     Name = "Fly Speed",
     Range = {1,10},
     Increment = 1,
@@ -2503,7 +5094,25 @@ UI.flySpeedSlider = MiscTab:CreateSlider({
     end
 })
 
-UI.noclipToggle = createToggleWithKeybind(MiscTab, {
+UI.walkSpeedToggle = UI.movementTab:CreateToggle({
+    Name = "Walkspeed",
+    CurrentValue = false,
+    Callback = function(value)
+        UI.walkSpeed.setEnabled(value)
+    end,
+})
+
+UI.walkSpeedSlider = UI.movementTab:CreateSlider({
+    Name = "Walk Speed",
+    Range = {8, 100},
+    Increment = 1,
+    CurrentValue = 24,
+    Callback = function(value)
+        UI.walkSpeed.setValue(value)
+    end,
+})
+
+UI.noclipToggle = createToggleWithKeybind(UI.movementTab, {
     Name = "Noclip",
     CurrentValue = false,
     Callback = function(v)
@@ -2511,7 +5120,7 @@ UI.noclipToggle = createToggleWithKeybind(MiscTab, {
     end
 })
 
-UI.shadowStepToggle = createToggleWithKeybind(MiscTab, {
+UI.shadowStepToggle = createToggleWithKeybind(UI.movementTab, {
      Name = "Enable Shadow step",
     CurrentValue = false,
     Callback = function(Value)
@@ -2519,7 +5128,7 @@ UI.shadowStepToggle = createToggleWithKeybind(MiscTab, {
     end
 })
 
-UI.shadowStepDistSlider = MiscTab:CreateSlider({
+UI.shadowStepDistSlider = UI.movementTab:CreateSlider({
     Name = "Shadow step Distance",
     Range = {10,120},
     Increment = 1,
@@ -2538,7 +5147,7 @@ blinkConnection = UserInputService.InputBegan:Connect(function(input, gp)
 end)
 
 
-MiscTab:CreateInput({
+UI.playersTab:CreateInput({
     Name = "Spectate Player",
     PlaceholderText = "Username...",
     RemoveTextAfterFocusLost = false,
@@ -2547,21 +5156,21 @@ MiscTab:CreateInput({
     end
 })
 
-MiscTab:CreateButton({
+UI.playersTab:CreateButton({
     Name = "Start Spectating",
     Callback = function()
         startSpectating(spectateName)
     end
 })
 
-MiscTab:CreateButton({
+UI.playersTab:CreateButton({
     Name = "Stop Spectating",
     Callback = function()
         stopSpectating()
     end
 })
 
-MiscTab:CreateInput({
+UI.playersTab:CreateInput({
     Name = "Teleport To Player",
     PlaceholderText = "Username...",
     RemoveTextAfterFocusLost = false,
@@ -2570,14 +5179,16 @@ MiscTab:CreateInput({
     end
 })
 
-MiscTab:CreateButton({
+UI.playersTab:CreateButton({
     Name = "Teleport",
     Callback = function()
         teleportToPlayer(teleportName)
     end
 })
 
-MiscTab:CreateButton({
+UI.hpM2CooldownToggle = UI.selfTab:CreateToggle(UI.hpM2CooldownToggleOptions)
+
+UI.selfTab:CreateButton({
     Name = "Force Reset",
     Callback = function()
         local character = LocalPlayer.Character
@@ -2602,48 +5213,106 @@ MiscTab:CreateButton({
 })
 
 -- ===== FUN TAB =====
-local FunTab = Window:CreateTab("🎉 Fun", 4483362458)
+UI.funTab = Window:CreateTab("Fun", 4483362458)
 
-UI.jetpackToggle = FunTab:CreateToggle({
-    Name = "Jetpack",
-    CurrentValue = false,
-    Callback = function(v)
-        jetpack.toggle(v)
+function UI.infCamZoom.readUpvalueOfType(callback, index, expectedType)
+    local getUpvalue = debug and debug.getupvalue or getupvalue
+    if typeof(getUpvalue) ~= "function" then
+        return nil
     end
-})
 
-UI.returnByDeathToggle = FunTab:CreateToggle({
-    Name = "Return by Death",
-    CurrentValue = false,
-    Callback = function(v)
-        returnByDeath.toggle(v)
+    local success, first, second = pcall(getUpvalue, callback, index)
+    if not success then
+        return nil
     end
-})
+    if typeof(second) == expectedType then
+        return second
+    end
+    if typeof(first) == expectedType then
+        return first
+    end
+    return nil
+end
 
-UI.infCamZoomToggle = FunTab:CreateToggle({
-    Name = "Inf Cam Zoom",
-    CurrentValue = false,
-    Callback = function(v)
-        infCamZoomEnabled = v
+function UI.infCamZoom.toggle(state, silent)
+    local setUpvalue = debug and debug.setupvalue or setupvalue
 
-        if v then
-            savedCamMaxZoom = LocalPlayer.CameraMaxZoomDistance
-            LocalPlayer.CameraMaxZoomDistance = "inf"
-            createNotification("Inf Cam Zoom", "Enabled (infinite max zoom)")
-        else
-            if savedCamMaxZoom ~= nil then
-                LocalPlayer.CameraMaxZoomDistance = savedCamMaxZoom
-                savedCamMaxZoom = nil
-            end
-            createNotification("Inf Cam Zoom", "Disabled (restored normal zoom)")
+    if state and UI.infCamZoom.enabled then
+        return
+    end
+
+    if not state then
+        if UI.infCamZoom.zoomController
+            and UI.infCamZoom.originalPopper
+            and typeof(setUpvalue) == "function"
+        then
+            pcall(setUpvalue, UI.infCamZoom.zoomController.Update, 7, UI.infCamZoom.originalPopper)
         end
+
+        UI.infCamZoom.enabled = false
+        UI.infCamZoom.zoomController = nil
+        UI.infCamZoom.originalPopper = nil
+        if UI.infCamZoom.savedMaxZoom ~= nil then
+            LocalPlayer.CameraMaxZoomDistance = UI.infCamZoom.savedMaxZoom
+            UI.infCamZoom.savedMaxZoom = nil
+        end
+        if not silent then
+            createNotification("Inf Cam Zoom", "Disabled (restored zoom and walls)")
+        end
+        return
     end
-})
+
+    local zoomController = require(
+        LocalPlayer.PlayerScripts.PlayerModule.CameraModule.ZoomController
+    )
+    local originalPopper = UI.infCamZoom.readUpvalueOfType(zoomController.Update, 7, "function")
+    if typeof(setUpvalue) ~= "function" or not originalPopper then
+        createNotification("Inf Cam Zoom", "Camera wall bypass is unsupported.")
+        task.defer(function()
+            if UI.infCamZoomToggle then
+                UI.infCamZoomToggle:Set(false)
+            end
+        end)
+        return
+    end
+
+    UI.infCamZoom.savedMaxZoom = UI.infCamZoom.savedMaxZoom or LocalPlayer.CameraMaxZoomDistance
+    UI.infCamZoom.zoomController = zoomController
+    UI.infCamZoom.originalPopper = originalPopper
+    UI.infCamZoom.passthroughPopper = UI.infCamZoom.passthroughPopper or function(_, distance)
+        return distance
+    end
+
+    local success = pcall(
+        setUpvalue,
+        zoomController.Update,
+        7,
+        UI.infCamZoom.passthroughPopper
+    )
+    if not success then
+        UI.infCamZoom.zoomController = nil
+        UI.infCamZoom.originalPopper = nil
+        UI.infCamZoom.savedMaxZoom = nil
+        createNotification("Inf Cam Zoom", "Failed to disable camera wall collision.")
+        task.defer(function()
+            if UI.infCamZoomToggle then
+                UI.infCamZoomToggle:Set(false)
+            end
+        end)
+        return
+    end
+
+    UI.infCamZoom.enabled = true
+    LocalPlayer.CameraMaxZoomDistance = math.huge
+    if not silent then
+        createNotification("Inf Cam Zoom", "Enabled (infinite zoom + wall bypass)")
+    end
+end
 
 -- ===== CONFIG TAB =====
-local ConfigTab = Window:CreateTab("⚙️ Config", 4483362458)
+UI.configTab = Window:CreateTab("Config", 4483362458)
 
-ConfigTab:CreateInput({
+UI.configTab:CreateInput({
     Name = "Config Name",
     PlaceholderText = "Name for your config...",
     RemoveTextAfterFocusLost = false,
@@ -2652,14 +5321,14 @@ ConfigTab:CreateInput({
     end
 })
 
-ConfigTab:CreateButton({
+UI.configTab:CreateButton({
     Name = "Save Config",
     Callback = function()
         saveConfig(UI.configNameInput)
     end
 })
 
-UI.configDropdown = ConfigTab:CreateDropdown({
+UI.configDropdown = UI.configTab:CreateDropdown({
     Name = "Select Config",
     Options = {},
     CurrentOption = "",
@@ -2671,14 +5340,14 @@ UI.configDropdown = ConfigTab:CreateDropdown({
     end
 })
 
-ConfigTab:CreateButton({
+UI.configTab:CreateButton({
     Name = "Load Config",
     Callback = function()
         loadConfig(UI.selectedConfig)
     end
 })
 
-UI.autoLoadDropdown = ConfigTab:CreateDropdown({
+UI.autoLoadDropdown = UI.configTab:CreateDropdown({
     Name = "Auto Load Config",
     Options = {},
     CurrentOption = "",
@@ -2690,19 +5359,171 @@ UI.autoLoadDropdown = ConfigTab:CreateDropdown({
     end
 })
 
-ConfigTab:CreateButton({
+UI.configTab:CreateButton({
     Name = "Auto Load Save",
     Callback = function()
         saveAutoLoad(UI.autoLoadSelected)
     end
 })
 
-ConfigTab:CreateButton({
+UI.configTab:CreateButton({
     Name = "Delete Config",
     Callback = function()
         deleteConfig(UI.selectedConfig)
     end
 })
+
+UI.returnByDeathToggle = UI.funTab:CreateToggle({
+    Name = "Return by Death",
+    CurrentValue = false,
+    Callback = function(v)
+        returnByDeath.toggle(v)
+    end
+})
+
+UI.autoGreenToggle = UI.funTab:CreateToggle({
+    Name = "Auto Green (Basketball)",
+    CurrentValue = false,
+    Callback = function(value)
+        UI.autoGreen.toggle(value)
+    end,
+})
+
+UI.rhythmAutoPerfectToggle = UI.funTab:CreateToggle({
+    Name = "Auto Perfect (Music)",
+    CurrentValue = false,
+    Callback = function(v)
+        rhythmAutoPerfect.toggle(v)
+    end
+})
+
+UI.autoPianoToggle = UI.funTab:CreateToggle({
+    Name = "Auto Play Piano",
+    CurrentValue = false,
+    Callback = function(value)
+        UI.autoPiano.toggle(value)
+    end,
+})
+
+UI.pianoSongDropdown = UI.funTab:CreateDropdown({
+    Name = "Piano Song",
+    Options = {"Twinkle Twinkle", "Happy Birthday", "Ode to Joy", "Fur Elise", "Jingle Bells", "Unravel (Tokyo Ghoul)", "Blue Bird (Naruto)", "A Cruel Angel's Thesis (Evangelion)", "L's Theme (Death Note)", "Beethoven Virus"},
+    CurrentOption = UI.autoPiano.selectedSong,
+    Callback = function(option)
+        if typeof(option) == "table" then option = option[1] end
+        if UI.autoPiano.songs[option] then
+            UI.autoPiano.selectedSong = option
+        end
+    end,
+})
+UI.pianoSongDropdown:Set(UI.autoPiano.selectedSong)
+
+UI.funTab:CreateButton({
+    Name = "Play Song",
+    Callback = function()
+        UI.autoPiano.playSelected()
+    end,
+})
+
+UI.jetpackToggle = UI.funTab:CreateToggle({
+    Name = "Jetpack",
+    CurrentValue = false,
+    Callback = function(v)
+        jetpack.toggle(v)
+    end
+})
+
+UI.infCamZoomToggle = UI.funTab:CreateToggle({
+    Name = "Inf Cam Zoom",
+    CurrentValue = false,
+    Callback = function(v)
+        UI.infCamZoom.toggle(v)
+    end
+})
+
+-- ===== SETTINGS TAB =====
+UI.settingsTab = Window:CreateTab("Settings", 4483362458)
+UI.colorPresets = {
+    Pink = Color3.fromRGB(218, 82, 138),
+    Purple = Color3.fromRGB(145, 101, 255),
+    Blue = Color3.fromRGB(71, 145, 255),
+    Emerald = Color3.fromRGB(52, 199, 138),
+    Orange = Color3.fromRGB(245, 142, 66),
+    Red = Color3.fromRGB(238, 79, 91),
+}
+
+UI.uiColorDropdown = UI.settingsTab:CreateDropdown({
+    Name = "Color Preset",
+    Options = {"Pink", "Purple", "Blue", "Emerald", "Orange", "Red"},
+    CurrentOption = UI.colorPreset,
+    Callback = function(option)
+        if typeof(option) == "table" then
+            option = option[1]
+        end
+        local color = UI.colorPresets[option]
+        if color then
+            UI.colorPreset = option
+            Window:SetAccent(color)
+        end
+    end
+})
+UI.uiColorDropdown:Set(UI.colorPreset)
+
+UI.uiToggleKeybind = UI.settingsTab:CreateKeybind({
+    Name = "UI Toggle Keybind",
+    CurrentKeybind = UI.toggleKeybind,
+    Callback = function(key)
+        if key == "None" then
+            key = "RightShift"
+            task.defer(function()
+                if UI.uiToggleKeybind then
+                    UI.uiToggleKeybind:Set(key)
+                end
+            end)
+        end
+        UI.toggleKeybind = key
+        Window:SetToggleKeybind(key)
+    end,
+})
+
+UI.restoreButtonToggle = UI.settingsTab:CreateToggle({
+    Name = "Show Minimize Star",
+    CurrentValue = true,
+    Callback = function(state)
+        UI.restoreButtonEnabled = state
+        Window:SetRestoreEnabled(state)
+    end,
+})
+
+UI.animationsToggle = UI.settingsTab:CreateToggle({
+    Name = "UI Animations",
+    CurrentValue = true,
+    Callback = function(state)
+        UI.animationsEnabled = state
+        Window:SetAnimationsEnabled(state)
+    end,
+})
+
+UI.uiScaleSlider = UI.settingsTab:CreateSlider({
+    Name = "UI Scale",
+    Range = {70, 120},
+    Increment = 5,
+    CurrentValue = 100,
+    Callback = function(value)
+        UI.scalePercent = value
+        Window:SetUIScale(value)
+    end,
+})
+
+UI.settingsTab:CreateButton({
+    Name = "Reset UI Position",
+    Callback = function()
+        Window:ResetPosition()
+    end,
+})
+
+UI.settingsTab:CreateButton(UI.rejoinButtonOptions)
+UI.settingsTab:CreateButton(UI.unloadButtonOptions)
 
 -- Populate config dropdowns and apply auto-load if set
 task.delay(0.3, refreshConfigDropdowns)
@@ -2962,7 +5783,7 @@ if isBypassUser(LocalPlayer.UserId) then
     Rayfield:Notify({
         Title = "MARI-HUB",
         Content = getBypassMessage(LocalPlayer.UserId),
-        Duration = 3,
+        Duration = 2,
     })
 else
     Rayfield:Notify({
@@ -2993,7 +5814,7 @@ end
 local CORRECT_KEY = "mari999mari"  
 
 
-local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+local Rayfield = createMariUI()
 
 local KEY_FILE = "MARI_HUB_KEY_SAVE.txt"
 local KEY_DURATION = 15 * 60 * 60 -- 15 hours in seconds
@@ -3073,10 +5894,11 @@ local KeyWindow = Rayfield:CreateWindow({
 
 local EnteredKey = ""
 
-local KeyTab = KeyWindow:CreateTab("🔑 Key", 4483362458)
+local KeyTab = KeyWindow:CreateTab("Access", 4483362458)
 
 KeyTab:CreateInput({
     Name = "Enter Key",
+    Description = "",
     PlaceholderText = "Key...",
     RemoveTextAfterFocusLost = false,
     Callback = function(text)
@@ -3086,6 +5908,7 @@ KeyTab:CreateInput({
 
 KeyTab:CreateButton({
     Name = "Verify",
+    Description = "",
     Callback = function()
         if EnteredKey == CORRECT_KEY then
     saveKeyAccess() -- Save the 15-hour access
@@ -3093,7 +5916,7 @@ KeyTab:CreateButton({
     Rayfield:Notify({
         Title = "Success",
         Content = "Key accepted! Saved for 15 hours.",
-        Duration = 3,
+        Duration = 2,
             })
 
             task.wait(1)
@@ -3107,7 +5930,7 @@ KeyTab:CreateButton({
             Rayfield:Notify({
                 Title = "Error",
                 Content = "Invalid Key, Click Get key!",
-                Duration = 3,
+                Duration = 2,
             })
         end
     end
@@ -3117,6 +5940,7 @@ local DISCORD_INVITE = "https://discord.gg/raNexsPGdd"
 
 KeyTab:CreateButton({
     Name = "🔑 Get Key",
+    Description = "Copies link to clipboard.",
     Callback = function()
         local success = pcall(function()
             setclipboard(DISCORD_INVITE)
