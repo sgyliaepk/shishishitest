@@ -3330,7 +3330,30 @@ function UI.clickSpectate.toggle(state)
             end
         end
 
-        local instance = LocalPlayer:GetMouse().Target
+        local camera = workspace.CurrentCamera
+        if not camera then
+            return
+        end
+
+        local targetCharacters = {}
+        for _, otherPlayer in ipairs(Players:GetPlayers()) do
+            if otherPlayer ~= LocalPlayer and otherPlayer.Character then
+                table.insert(targetCharacters, otherPlayer.Character)
+            end
+        end
+        if #targetCharacters == 0 then
+            return
+        end
+
+        -- Only character geometry participates, so map walls cannot block this ray.
+        local ray = camera:ScreenPointToRay(input.Position.X, input.Position.Y)
+        local raycastParams = RaycastParams.new()
+        raycastParams.FilterType = Enum.RaycastFilterType.Include
+        raycastParams.FilterDescendantsInstances = targetCharacters
+        raycastParams.IgnoreWater = true
+
+        local result = workspace:Raycast(ray.Origin, ray.Direction * 100000, raycastParams)
+        local instance = result and result.Instance
         local player
         while instance and instance ~= workspace do
             if instance:IsA("Model") then
