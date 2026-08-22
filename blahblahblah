@@ -105,6 +105,7 @@ local function createMariUI()
         ["Shadow step Distance"] = "Controls the distance of each shadow step.",
         ["Spectate Player"] = "Enter a username or unique username prefix.",
         ["Click to Spectate"] = "Click another player's body to spectate them.",
+        ["Click Player TP"] = "Click another player's body to teleport to them.",
         ["Start Spectating"] = "Moves your camera to the entered player.",
         ["Stop Spectating"] = "Restores the camera to your character.",
         ["Teleport To Player"] = "Enter a username or unique username prefix.",
@@ -1542,6 +1543,7 @@ local UI = {
     },
     flingVoid = {enabled = false, running = false, token = 0, connections = {}, hitCooldown = {}},
     clickSpectate = {enabled = false, connection = nil, button = nil, buttonConnection = nil},
+    clickPlayerTeleport = {enabled = false, connection = nil},
     walkSpeed = {
         enabled = false,
         value = 24,
@@ -3299,7 +3301,69 @@ function UI.clickSpectate.destroyButton()
     end
 end
 
+function UI.clickSpectate.isClickOnStopSpectatingButton(position)
+    local button = UI.clickSpectate.button
+    if not button or not button.Visible then
+        return false
+    end
+
+    local buttonPosition = button.AbsolutePosition
+    local buttonSize = button.AbsoluteSize
+    return position.X >= buttonPosition.X
+        and position.X <= buttonPosition.X + buttonSize.X
+        and position.Y >= buttonPosition.Y
+        and position.Y <= buttonPosition.Y + buttonSize.Y
+end
+
+function UI.clickSpectate.getClickedPlayerThroughWalls(position)
+    local camera = workspace.CurrentCamera
+    if not camera then
+        return nil
+    end
+
+    local targetCharacters = {}
+    for _, otherPlayer in ipairs(Players:GetPlayers()) do
+        if otherPlayer ~= LocalPlayer and otherPlayer.Character then
+            table.insert(targetCharacters, otherPlayer.Character)
+        end
+    end
+    if #targetCharacters == 0 then
+        return nil
+    end
+
+    -- Only character geometry participates, so map walls cannot block this ray.
+    local ray = camera:ScreenPointToRay(position.X, position.Y)
+    local raycastParams = RaycastParams.new()
+    raycastParams.FilterType = Enum.RaycastFilterType.Include
+    raycastParams.FilterDescendantsInstances = targetCharacters
+    raycastParams.IgnoreWater = true
+
+    local result = workspace:Raycast(ray.Origin, ray.Direction * 100000, raycastParams)
+    local instance = result and result.Instance
+    while instance and instance ~= workspace do
+        if instance:IsA("Model") then
+            local player = Players:GetPlayerFromCharacter(instance)
+            if player and player ~= LocalPlayer then
+                return player
+            end
+        end
+        instance = instance.Parent
+    end
+
+    return nil
+end
+
 function UI.clickSpectate.toggle(state)
+    if state == true and UI.clickPlayerTeleport.enabled then
+        createNotification("Error", "Turn Click Player TP off before turning on Click to Spectate.")
+        task.defer(function()
+            if UI.clickSpectateToggle and UI.clickSpectateToggle.CurrentValue then
+                UI.clickSpectateToggle:Set(false)
+            end
+        end)
+        return
+    end
+
     UI.clickSpectate.enabled = state == true
     if UI.clickSpectate.connection then
         UI.clickSpectate.connection:Disconnect()
@@ -3317,57 +3381,57 @@ function UI.clickSpectate.toggle(state)
             return
         end
 
-        if UI.clickSpectate.button and UI.clickSpectate.button.Visible then
-            local position = input.Position
-            local buttonPosition = UI.clickSpectate.button.AbsolutePosition
-            local buttonSize = UI.clickSpectate.button.AbsoluteSize
-            if position.X >= buttonPosition.X
-                and position.X <= buttonPosition.X + buttonSize.X
-                and position.Y >= buttonPosition.Y
-                and position.Y <= buttonPosition.Y + buttonSize.Y
-            then
-                return
-            end
-        end
-
-        local camera = workspace.CurrentCamera
-        if not camera then
+        if UI.clickSpectate.isClickOnStopSpectatingButton(input.Position) then
             return
         end
 
-        local targetCharacters = {}
-        for _, otherPlayer in ipairs(Players:GetPlayers()) do
-            if otherPlayer ~= LocalPlayer and otherPlayer.Character then
-                table.insert(targetCharacters, otherPlayer.Character)
-            end
-        end
-        if #targetCharacters == 0 then
-            return
-        end
-
-        -- Only character geometry participates, so map walls cannot block this ray.
-        local ray = camera:ScreenPointToRay(input.Position.X, input.Position.Y)
-        local raycastParams = RaycastParams.new()
-        raycastParams.FilterType = Enum.RaycastFilterType.Include
-        raycastParams.FilterDescendantsInstances = targetCharacters
-        raycastParams.IgnoreWater = true
-
-        local result = workspace:Raycast(ray.Origin, ray.Direction * 100000, raycastParams)
-        local instance = result and result.Instance
-        local player
-        while instance and instance ~= workspace do
-            if instance:IsA("Model") then
-                player = Players:GetPlayerFromCharacter(instance)
-                if player then
-                    break
-                end
-            end
-            instance = instance.Parent
-        end
-
-        if player and player ~= LocalPlayer then
+        local player = UI.clickSpectate.getClickedPlayerThroughWalls(input.Position)
+        if player then
             startSpectating(player.Name)
         end
+    end)
+end
+
+function UI.clickPlayerTeleport.toggle(state)
+    if state == true and UI.clickSpectate.enabled then
+        createNotification("Error", "Turn Click to Spectate off before turning on Click Player TP.")
+        task.defer(function()
+            if UI.clickPlayerTeleportToggle and UI.clickPlayerTeleportToggle.CurrentValue then
+                UI.clickPlayerTeleportToggle:Set(false)
+            end
+        end)
+        return
+    end
+
+    UI.clickPlayerTeleport.enabled = state == true
+    if UI.clickPlayerTeleport.connection then
+        UI.clickPlayerTeleport.connection:Disconnect()
+        UI.clickPlayerTeleport.connection = nil
+    end
+    if not UI.clickPlayerTeleport.enabled then
+        return
+    end
+
+    UI.clickPlayerTeleport.connection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed
+            or input.UserInputType ~= Enum.UserInputType.MouseButton1
+            or UserInputService:GetFocusedTextBox()
+            or UI.clickSpectate.isClickOnStopSpectatingButton(input.Position)
+        then
+            return
+        end
+
+        local player = UI.clickSpectate.getClickedPlayerThroughWalls(input.Position)
+        local character = LocalPlayer.Character
+        local ownRoot = character and character:FindFirstChild("HumanoidRootPart")
+        local targetCharacter = player and player.Character
+        local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+        if not ownRoot or not targetRoot then
+            return
+        end
+
+        ownRoot.CFrame = targetRoot.CFrame * CFrame.new(0, 0, -3)
+        createNotification("Teleported", "Teleported to " .. player.Name)
     end)
 end
 
@@ -4579,6 +4643,7 @@ local function collectSettings()
         jetpackEnabled = jetpack.enabled,
         flingVoidEnabled = UI.flingVoid.enabled,
         clickSpectateEnabled = UI.clickSpectate.enabled,
+        clickPlayerTeleportEnabled = UI.clickPlayerTeleport.enabled,
         autoGreenEnabled = UI.autoGreen.enabled,
         autoPianoEnabled = UI.autoPiano.enabled,
         pianoSong = UI.autoPiano.selectedSong,
@@ -4708,6 +4773,7 @@ local function applySettings(settings)
     setToggleIfChanged(UI.jetpackToggle, settings.jetpackEnabled == true)
     setToggleIfChanged(UI.flingVoidToggle, settings.flingVoidEnabled == true)
     setToggleIfChanged(UI.clickSpectateToggle, settings.clickSpectateEnabled == true)
+    setToggleIfChanged(UI.clickPlayerTeleportToggle, settings.clickPlayerTeleportEnabled == true)
     setToggleIfChanged(UI.autoGreenToggle, settings.autoGreenEnabled == true)
     setToggleIfChanged(UI.autoPianoToggle, settings.autoPianoEnabled == true)
     if type(settings.pianoSong) == "string" and UI.autoPiano.songs[settings.pianoSong] then
@@ -5723,6 +5789,7 @@ UI.hpM2Cooldown.toggle(false)
 jetpack.toggle(false)
 UI.flingVoid.toggle(false)
 UI.clickSpectate.toggle(false)
+UI.clickPlayerTeleport.toggle(false)
 UI.autoGreen.toggle(false)
 UI.autoPiano.toggle(false)
 returnByDeath.toggle(false)
@@ -6016,6 +6083,14 @@ UI.clickSpectateToggle = UI.playersTab:CreateToggle({
     CurrentValue = false,
     Callback = function(value)
         UI.clickSpectate.toggle(value)
+    end,
+})
+
+UI.clickPlayerTeleportToggle = UI.playersTab:CreateToggle({
+    Name = "Click Player TP",
+    CurrentValue = false,
+    Callback = function(value)
+        UI.clickPlayerTeleport.toggle(value)
     end,
 })
 
