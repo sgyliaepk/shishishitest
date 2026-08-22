@@ -79,15 +79,17 @@ local function createMariUI()
         ["Inf Stamina"] = "Keeps your stamina full.",
         ["No Dodge Cooldown"] = "Removes the dodge cooldown.",
         ["Anti Stun"] = "Prevents you from being stunned.",
+        ["No Blur"] = "Prevents screen blur effects.",
         ["ESP"] = "Shows players through walls.",
         ["ESP Distance"] = "Changes how far ESP can be seen.",
         ["show hp and m2 cooldown"] = "Shows your HP and M2 cooldown.",
         ["Show Healthbars"] = "Shows player health bars.",
-        ["Enable Fling"] = "Enables player fling.",
-        ["Fling Power"] = "Controls the velocity used by fling.",
-        ["Target Player"] = "tp to player and fling.",
-        ["Fling Duration"] = "Controls how long the selected-target fling runs.",
-        ["Fling Selected"] = "Flings the selected target at maximum power.",
+        ["Trampoline"] = "Become a trampoline.",
+        ["Chat Logger"] = "Logs player chat messages while enabled.",
+        ["Auto Chess"] = "Automatically plays strong legal chess moves.",
+        ["Target Mode Fling"] = "Enter a player name.",
+        ["Fling"] = "Fling the selected player.",
+        ["Stop Fling"] = "Stop the current fling.",
         ["Show Usernames"] = "Shows player usernames.",
         ["Rejoin Server"] = "Reconnects to the current server instance.",
         ["Unload Hub"] = "Disables features, restores changed state, and removes the UI.",
@@ -102,12 +104,14 @@ local function createMariUI()
         ["Enable Shadow step"] = "Press Q to dash forward.",
         ["Shadow step Distance"] = "Controls the distance of each shadow step.",
         ["Spectate Player"] = "Enter a username or unique username prefix.",
+        ["Click to Spectate"] = "Click another player's body to spectate them.",
         ["Start Spectating"] = "Moves your camera to the entered player.",
         ["Stop Spectating"] = "Restores the camera to your character.",
         ["Teleport To Player"] = "Enter a username or unique username prefix.",
         ["Teleport"] = "Moves your character behind the entered player.",
         ["Force Reset"] = "Launches your character to force a reset.",
         ["Jetpack"] = "Hold Space to fly upward.",
+        ["Voidfling"] = "Fling players toward the void when you touch them.",
         ["Return by Death"] = "Returns you to where you died.",
         ["Auto Perfect (Music)"] = "Automatically hits music notes.",
         ["Auto Green (Basketball)"] = "Releases basketball shots in the green window.",
@@ -1246,7 +1250,7 @@ local function createMariUI()
                     keybindRoot = new("Frame", {
                         Name = options.Name or "Keybind",
                         AnchorPoint = Vector2.new(1, 0.5),
-                        Position = UDim2.new(1, -68, 0.5, 0),
+                        Position = options.InlinePosition or UDim2.new(1, -68, 0.5, 0),
                         Size = UDim2.fromOffset(96, 30),
                         BackgroundTransparency = 1,
                         ZIndex = 4,
@@ -1495,9 +1499,11 @@ end
 
 -- ===== FLING VARIABLES =====
 local flingActive = false
-local flingPower = 50
-local targetPlayer = nil
-local selectedFling = {duration = 1, token = 0, running = false}
+local TRAMPOLINE_POWER = 100
+local impactTargetText = ""
+local impactTargetPlayer = nil
+local impactState = {running = false, connections = {}}
+local gakuranImpact = {Version = 3, LastMetrics = nil}
 local rejoinCooldown = false
 local namesVisible = false
 local nameTagsActive = true
@@ -1510,8 +1516,6 @@ local antiFlingConnection = nil
 local blinkConnection
 local originalCanCollide = {}
 local connections = {}
-local lastFlingError = 0
-local updatingDropdown = false
 
 -- ===== CONFIG VARIABLES =====
 local UI = {
@@ -1522,6 +1526,22 @@ local UI = {
     restoreButtonEnabled = true,
     animationsEnabled = true,
     scalePercent = 100,
+    noBlur = {enabled = false, connection = nil, states = {}},
+    chatLogger = {enabled = false, gui = nil, body = nil, connections = {}},
+    autoChess = {
+        enabled = false,
+        connection = nil,
+        context = nil,
+        state = nil,
+        moves = nil,
+        eval = nil,
+        searching = false,
+        nodes = 0,
+        lastFen = nil,
+        nextScan = 0,
+    },
+    flingVoid = {enabled = false, running = false, token = 0, connections = {}, hitCooldown = {}},
+    clickSpectate = {enabled = false, connection = nil, button = nil, buttonConnection = nil},
     walkSpeed = {
         enabled = false,
         value = 24,
@@ -1733,17 +1753,6 @@ local function sendExecutionLog()
     end
 end
 
--- ===== TARGET FUNCTIONS =====
-local function updateTargetStatusLabel()
-    if not UI.targetStatusLabel then
-        return
-    end
-    if targetPlayer and targetPlayer.Parent ~= Players then
-        targetPlayer = nil
-    end
-    UI.targetStatusLabel:Set("Selected Target: " .. (targetPlayer and targetPlayer.Name or "None"))
-end
-
 -- ===== FLING LOGIC =====
 local flingPartsByChar = {}
 local flingCharConnections = {}
@@ -1834,7 +1843,6 @@ local function stopFlingLoop()
         flingConnection = nil
     end
     clearFlingWiring()
-    updateTargetStatusLabel()
 end
 
 local function stopFlingOnDeath()
@@ -1904,7 +1912,7 @@ local function startFlingLoop()
                     table.insert(playerGhosted, v)
                 end
             end
-            local strength = flingPower * 100
+            local strength = TRAMPOLINE_POWER * 100
             local oldV = hrp.Velocity
             local newV = Vector3.new(strength, strength, strength)
             pcall(function()
@@ -2022,14 +2030,9 @@ local function toggleFling(newState)
         flingActive = newState
     end
 
-    playSound()
-    createNotification("Fling", flingActive and "Enabled" or "Disabled")
-
-    if UI.flingToggleRef then
-        UI.flingToggleRef:Set(flingActive)
+    if UI.trampolineToggleRef then
+        UI.trampolineToggleRef:Set(flingActive)
     end
-
-    updateTargetStatusLabel()
 
     if flingActive then
         startFlingLoop()
@@ -2046,149 +2049,301 @@ local function toggleFling(newState)
     end
 end
 
-function selectedFling.restoreArms()
-    for joint, transform in pairs(selectedFling.armTransforms or {}) do
-        if joint.Parent then
-            joint.Transform = transform
-        end
+local impactEnvironment = getgenv()
+if impactEnvironment.GakuranFling and impactEnvironment.GakuranFling.Destroy then
+    pcall(impactEnvironment.GakuranFling.Destroy)
+end
+impactEnvironment.GakuranFling = gakuranImpact
+
+local function updateImpactTargetStatus()
+    if impactTargetPlayer and impactTargetPlayer.Parent ~= Players then
+        impactTargetPlayer = nil
     end
-    for part, canCollide in pairs(selectedFling.armCollisions or {}) do
-        if part.Parent then
-            part.CanCollide = canCollide
-        end
+    if UI.impactStatusLabel then
+        UI.impactStatusLabel:Set(
+            "Target mode: " .. (impactTargetPlayer and impactTargetPlayer.Name or "None")
+        )
     end
-    selectedFling.armTransforms = nil
-    selectedFling.armCollisions = nil
 end
 
-function selectedFling.stop(restore)
-    selectedFling.token = selectedFling.token + 1
-    selectedFling.running = false
-    local root = selectedFling.root
-    local humanoid = selectedFling.humanoid
-    if root and root.Parent then
-        root.AssemblyLinearVelocity = Vector3.zero
-        root.AssemblyAngularVelocity = Vector3.zero
-        if restore and selectedFling.savedCFrame then
-            root.CFrame = selectedFling.savedCFrame
-        end
-        if selectedFling.savedAnchored ~= nil then
-            root.Anchored = selectedFling.savedAnchored
-        end
+local function clearImpactTarget()
+    impactTargetText = ""
+    impactTargetPlayer = nil
+    if UI.impactTargetInput and UI.impactTargetInput.TextBox then
+        UI.impactTargetInput.TextBox.Text = ""
     end
-    if humanoid and humanoid.Parent and selectedFling.savedPlatformStand ~= nil then
-        humanoid.PlatformStand = selectedFling.savedPlatformStand
-    end
-    selectedFling.restoreArms()
-    selectedFling.root = nil
-    selectedFling.humanoid = nil
-    selectedFling.savedCFrame = nil
-    selectedFling.savedAnchored = nil
-    selectedFling.savedPlatformStand = nil
+    updateImpactTargetStatus()
 end
 
-function selectedFling.start()
-    if selectedFling.running then
-        selectedFling.stop(true)
-        createNotification("Fling Selected", "Fling cancelled.")
-        return
+local function getImpactParts(character)
+    local result = {}
+    if character then
+        for _, instance in character:GetDescendants() do
+            if instance:IsA("BasePart") then
+                result[#result + 1] = instance
+            end
+        end
     end
+    return result
+end
 
-    local player = targetPlayer
-    local targetCharacter = player and player.Character
-    local targetHumanoid = targetCharacter and targetCharacter:FindFirstChildOfClass("Humanoid")
-    local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
-    local character = LocalPlayer.Character
+local function isValidImpactTarget(player)
+    local character = player and player ~= LocalPlayer and player.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
     local root = character and character:FindFirstChild("HumanoidRootPart")
-    if not player or not targetHumanoid or targetHumanoid.Health <= 0 or not targetRoot then
-        createNotification("Fling Selected", "Choose a living target first.")
+    return humanoid and root and humanoid.Health > 0 and root.AssemblyMass < 10000
+end
+
+local function resolveImpactTarget(text)
+    text = string.lower((text or ""):gsub("%s+", ""))
+    local ownRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local nearestPlayer
+    local nearestDistance
+
+    for _, player in Players:GetPlayers() do
+        if isValidImpactTarget(player) then
+            if text ~= "" then
+                local usernameMatches = string.sub(string.lower(player.Name), 1, #text) == text
+                local displayNameMatches = string.sub(string.lower(player.DisplayName), 1, #text) == text
+                if usernameMatches or displayNameMatches then
+                    return player
+                end
+            elseif ownRoot then
+                local distance = (player.Character.HumanoidRootPart.Position - ownRoot.Position).Magnitude
+                if not nearestDistance or distance < nearestDistance then
+                    nearestPlayer = player
+                    nearestDistance = distance
+                end
+            end
+        end
+    end
+    return nearestPlayer
+end
+
+local function getMovementGuard()
+    if not getloadedmodules then
+        return nil
+    end
+    for _, module in ipairs(getloadedmodules()) do
+        if module.Name == "MovementGuardClient" then
+            local success, guard = pcall(require, module)
+            if success then
+                return guard
+            end
+        end
+    end
+    return nil
+end
+
+function gakuranImpact.Stop()
+    impactState.running = false
+end
+
+function gakuranImpact.Fling(target)
+    if impactState.running then
         return
     end
-    if not character or not humanoid or humanoid.Health <= 0 or not root then
-        createNotification("Fling Selected", "Your character is unavailable.")
+
+    local shouldLockTarget = typeof(target) == "Instance"
+    if not shouldLockTarget then
+        local targetText = target or impactTargetText
+        shouldLockTarget = targetText:gsub("%s+", "") ~= ""
+        target = shouldLockTarget and isValidImpactTarget(impactTargetPlayer)
+            and impactTargetPlayer
+            or resolveImpactTarget(targetText)
+    end
+    if not isValidImpactTarget(target) then
+        clearImpactTarget()
+        createNotification("Error", "Player does not exist.")
         return
+    end
+    if shouldLockTarget then
+        impactTargetPlayer = target
+        updateImpactTargetStatus()
+    else
+        impactTargetPlayer = nil
+        updateImpactTargetStatus()
     end
 
     if flingActive then
         toggleFling(false)
     end
-    selectedFling.stop(false)
-    selectedFling.running = true
-    local token = selectedFling.token
-    selectedFling.root = root
-    selectedFling.humanoid = humanoid
-    selectedFling.savedCFrame = root.CFrame
-    selectedFling.savedAnchored = root.Anchored
-    selectedFling.savedPlatformStand = humanoid.PlatformStand
-    selectedFling.armTransforms = {}
-    selectedFling.armCollisions = {}
-    for _, descendant in ipairs(character:GetDescendants()) do
-        if (descendant:IsA("Motor6D") or descendant:IsA("AnimationConstraint"))
-            and (descendant.Name == "LeftShoulder" or descendant.Name == "RightShoulder")
-        then
-            selectedFling.armTransforms[descendant] = descendant.Transform
-        elseif descendant:IsA("BasePart") and (
-            descendant.Name:find("Arm", 1, true) or descendant.Name:find("Hand", 1, true)
-        ) then
-            selectedFling.armCollisions[descendant] = descendant.CanCollide
-            descendant.CanCollide = true
-        end
-    end
-    root.Anchored = false
-    humanoid.PlatformStand = true
-    createNotification("Fling Selected", "Flinging " .. player.Name .. "...")
+    impactState.running = true
 
     task.spawn(function()
-        local startedAt = os.clock()
-        local savedCFrame = selectedFling.savedCFrame
-        while selectedFling.running
-            and token == selectedFling.token
-            and root.Parent
-            and humanoid.Health > 0
-            and os.clock() - startedAt < selectedFling.duration
-        do
-            targetCharacter = player.Character
-            targetHumanoid = targetCharacter and targetCharacter:FindFirstChildOfClass("Humanoid")
-            targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
-            if not targetHumanoid or targetHumanoid.Health <= 0 or not targetRoot then break end
+        local character = LocalPlayer.Character
+        local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+        local root = character and character:FindFirstChild("HumanoidRootPart")
+        local targetCharacter = target.Character
+        local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
 
-            local elapsed = os.clock() - startedAt
-            local phase = elapsed * 28
-            for joint in pairs(selectedFling.armTransforms) do
-                if joint.Parent then
-                    local direction = joint.Name == "LeftShoulder" and -1 or 1
-                    joint.Transform = CFrame.Angles(0, 0, math.rad(90 * direction))
+        if not humanoid or not root or not targetRoot then
+            impactState.running = false
+            return
+        end
+
+        if humanoid.Sit or humanoid.SeatPart then
+            humanoid.Sit = false
+            humanoid.Jump = true
+            humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+            task.wait(0.2)
+        end
+
+        local savedCFrame = root.CFrame
+        local targetStart = targetRoot.Position
+        local savedAutoRotate = humanoid.AutoRotate
+        local savedPlatformStand = humanoid.PlatformStand
+        local ownCollision = {}
+        local targetCollision = {}
+
+        for _, part in getImpactParts(character) do
+            ownCollision[part] = part.CanCollide
+        end
+        for _, part in getImpactParts(targetCharacter) do
+            targetCollision[part] = part.CanCollide
+            part.CanCollide = true
+        end
+
+        local guard = getMovementGuard()
+        if guard and guard._connection then
+            guard._connection:Disconnect()
+            guard._connection = nil
+        end
+
+        pcall(function()
+            if sethiddenproperty then
+                sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge)
+            end
+        end)
+
+        humanoid.AutoRotate = false
+        humanoid.PlatformStand = true
+        humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+        root.CanCollide = true
+
+        local startedAt = os.clock()
+        local frame = 0
+        local peakHorizontal = 0
+        local peakVertical = 0
+
+        while impactState.running
+            and os.clock() - startedAt < 3.6
+            and isValidImpactTarget(target)
+            and LocalPlayer.Character == character
+        do
+            frame = frame + 1
+            targetCharacter = target.Character
+            targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+            if not targetRoot then
+                break
+            end
+
+            local slot = frame % 5
+            local contact = (slot == 0 and targetCharacter:FindFirstChild("LowerTorso"))
+                or (slot == 1 and targetCharacter:FindFirstChild("UpperTorso"))
+                or (slot == 2 and targetCharacter:FindFirstChild("LeftUpperLeg"))
+                or (slot == 3 and targetCharacter:FindFirstChild("RightUpperLeg"))
+                or targetRoot
+
+            for part in pairs(targetCollision) do
+                if part.Parent then
+                    part.CanCollide = true
                 end
             end
-            for part in pairs(selectedFling.armCollisions) do
-                if part.Parent then part.CanCollide = true end
+
+            local away = Vector3.new(
+                targetRoot.Position.X - savedCFrame.Position.X,
+                0,
+                targetRoot.Position.Z - savedCFrame.Position.Z
+            )
+            if away.Magnitude < 0.1 then
+                local camera = workspace.CurrentCamera
+                local look = camera and camera.CFrame.LookVector or root.CFrame.LookVector
+                away = Vector3.new(look.X, 0, look.Z)
             end
-            root.CFrame = targetRoot.CFrame
-                * CFrame.new(math.sin(phase) * 1.15, math.sin(phase * 0.7) * 1.2, math.cos(phase) * 1.15)
-                * CFrame.Angles(0, math.rad(3000) * elapsed, 0)
-            root.AssemblyAngularVelocity = Vector3.new(2000, 2000, 2000)
-            local delta = targetRoot.Position - root.Position
-            root.AssemblyLinearVelocity = (delta.Magnitude > 0.05 and delta.Unit or Vector3.xAxis) * 2000
+            away = away.Unit
+
+            local side = Vector3.new(-away.Z, 0, away.X)
+            local lane = ((frame % 8) - 3.5) * 0.12
+            local ramPosition = contact.Position - away * 0.62 + side * lane
+            root.CFrame = CFrame.lookAt(ramPosition, ramPosition + away)
+            root.AssemblyLinearVelocity = away * 1250000
+                + side * ((frame % 2 == 0 and 1 or -1) * 35000)
+                + Vector3.new(0, 2, 0)
+            root.AssemblyAngularVelocity = Vector3.new(
+                0,
+                (frame % 2 == 0 and 1 or -1) * 1800000,
+                0
+            )
+
+            local targetVelocity = targetRoot.AssemblyLinearVelocity
+            local horizontalVelocity = Vector3.new(targetVelocity.X, 0, targetVelocity.Z).Magnitude
+            peakHorizontal = math.max(peakHorizontal, horizontalVelocity)
+            peakVertical = math.max(peakVertical, math.abs(targetVelocity.Y))
             RunService.Heartbeat:Wait()
         end
 
-        if token ~= selectedFling.token or not root.Parent then return end
-        root.Anchored = true
-        root.CFrame = savedCFrame
-        root.AssemblyAngularVelocity = Vector3.zero
-        root.AssemblyLinearVelocity = Vector3.zero
-        RunService.Heartbeat:Wait()
-        if token ~= selectedFling.token then return end
-        root.CFrame = savedCFrame
-        root.AssemblyAngularVelocity = Vector3.zero
-        root.AssemblyLinearVelocity = Vector3.zero
-        RunService.Heartbeat:Wait()
-        if token ~= selectedFling.token then return end
-        selectedFling.stop(false)
-        createNotification("Fling Selected", "Sequence complete.")
+        impactState.running = false
+        local displacement = targetRoot
+            and Vector3.new(
+                targetRoot.Position.X - targetStart.X,
+                0,
+                targetRoot.Position.Z - targetStart.Z
+            ).Magnitude
+            or 0
+
+        gakuranImpact.LastMetrics = {
+            Target = target.Name,
+            HorizontalDisplacement = displacement,
+            PeakHorizontalVelocity = peakHorizontal,
+            PeakVerticalVelocity = peakVertical,
+        }
+
+        for part, canCollide in pairs(targetCollision) do
+            if part.Parent then
+                part.CanCollide = canCollide
+            end
+        end
+        for part, canCollide in pairs(ownCollision) do
+            if part.Parent then
+                part.CanCollide = canCollide
+            end
+        end
+
+        if guard and guard._initialized and not guard._connection then
+            guard._connection = RunService.Heartbeat:Connect(function()
+                guard:_step()
+            end)
+        end
+
+        if root.Parent and LocalPlayer.Character == character then
+            root.AssemblyAngularVelocity = Vector3.zero
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.CFrame = savedCFrame * CFrame.new(0, 2.5, 0)
+            humanoid.PlatformStand = savedPlatformStand
+            humanoid.AutoRotate = savedAutoRotate
+            humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+
     end)
 end
+
+function gakuranImpact.Destroy()
+    impactState.running = false
+    for _, connection in impactState.connections do
+        connection:Disconnect()
+    end
+    table.clear(impactState.connections)
+    if getgenv().GakuranFling == gakuranImpact then
+        getgenv().GakuranFling = nil
+    end
+end
+
+table.insert(connections, Players.PlayerRemoving:Connect(function(player)
+    if player == impactTargetPlayer then
+        clearImpactTarget()
+    end
+end))
 
 -- ===== USERNAME TAGS =====
 local function createNameTag(plr)
@@ -2466,6 +2621,182 @@ local function toggleAntiVoid(state)
         createNotification("Anti Void", "Disabled")
     end
 end
+
+-- ===== TOUCH FLING TO VOID =====
+function UI.flingVoid.disconnectTouches()
+    for _, connection in ipairs(UI.flingVoid.connections) do
+        connection:Disconnect()
+    end
+    table.clear(UI.flingVoid.connections)
+end
+
+function UI.flingVoid.flingPlayer(player)
+    if UI.flingVoid.running or not UI.flingVoid.enabled or flingActive or impactState.running then
+        return
+    end
+
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local targetCharacter = player and player.Character
+    local targetHumanoid = targetCharacter and targetCharacter:FindFirstChildOfClass("Humanoid")
+    local targetRoot = targetCharacter and targetCharacter:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not root or not targetHumanoid or targetHumanoid.Health <= 0 or not targetRoot then
+        return
+    end
+
+    UI.flingVoid.running = true
+    UI.flingVoid.token = UI.flingVoid.token + 1
+    local token = UI.flingVoid.token
+
+    task.spawn(function()
+        local savedCFrame = root.CFrame
+        local savedLinearVelocity = root.AssemblyLinearVelocity
+        local savedAngularVelocity = root.AssemblyAngularVelocity
+        local savedAutoRotate = humanoid.AutoRotate
+        local savedPlatformStand = humanoid.PlatformStand
+        local savedDestroyHeight = workspace.FallenPartsDestroyHeight
+        local ownCollision = {}
+        local targetCollision = {}
+
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                ownCollision[part] = part.CanCollide
+                part.CanCollide = part == root
+            end
+        end
+        for _, part in ipairs(targetCharacter:GetDescendants()) do
+            if part:IsA("BasePart") then
+                targetCollision[part] = part.CanCollide
+                part.CanCollide = true
+            end
+        end
+
+        workspace.FallenPartsDestroyHeight = 0/0
+        pcall(function()
+            if sethiddenproperty then
+                sethiddenproperty(LocalPlayer, "SimulationRadius", math.huge)
+            end
+        end)
+        humanoid.AutoRotate = false
+        humanoid.PlatformStand = true
+        humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+
+        local startedAt = os.clock()
+        local frame = 0
+        while UI.flingVoid.enabled
+            and token == UI.flingVoid.token
+            and LocalPlayer.Character == character
+            and player.Parent == Players
+            and targetCharacter == player.Character
+            and targetRoot.Parent
+            and targetHumanoid.Health > 0
+            and os.clock() - startedAt < 1.35
+        do
+            frame = frame + 1
+            local targetVelocity = targetRoot.AssemblyLinearVelocity
+            local predictionTime = math.clamp(smoothedPing + 1 / 30, 0.04, 0.2)
+            local predictedPosition = targetRoot.Position + Vector3.new(
+                targetVelocity.X,
+                0,
+                targetVelocity.Z
+            ) * predictionTime
+            local contactOffset = frame % 2 == 0 and 0.08 or -0.08
+            root.CFrame = CFrame.new(
+                predictedPosition + Vector3.new(contactOffset, 0.7, 0)
+            )
+            root.AssemblyLinearVelocity = Vector3.new(0, -1000000000, 0)
+            root.AssemblyAngularVelocity = Vector3.new(0, 100000000, 0)
+            pcall(function()
+                targetRoot.AssemblyLinearVelocity = Vector3.new(0, -1000000000, 0)
+            end)
+            RunService.Heartbeat:Wait()
+        end
+
+        for part, canCollide in pairs(targetCollision) do
+            if part.Parent then
+                part.CanCollide = canCollide
+            end
+        end
+        for part, canCollide in pairs(ownCollision) do
+            if part.Parent then
+                part.CanCollide = canCollide
+            end
+        end
+
+        workspace.FallenPartsDestroyHeight = antiVoidEnabled and 0/0 or savedDestroyHeight
+        if root.Parent and LocalPlayer.Character == character then
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+            root.CFrame = savedCFrame + Vector3.new(0, 3, 0)
+            humanoid.PlatformStand = savedPlatformStand
+            humanoid.AutoRotate = savedAutoRotate
+            humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+            task.defer(function()
+                if root.Parent then
+                    root.AssemblyLinearVelocity = savedLinearVelocity
+                    root.AssemblyAngularVelocity = savedAngularVelocity
+                end
+            end)
+        end
+
+        UI.flingVoid.running = false
+    end)
+end
+
+function UI.flingVoid.onTouched(part)
+    if not UI.flingVoid.enabled or UI.flingVoid.running or not part then
+        return
+    end
+
+    local targetCharacter = part:FindFirstAncestorOfClass("Model")
+    local player = targetCharacter and Players:GetPlayerFromCharacter(targetCharacter)
+    if not player or player == LocalPlayer then
+        return
+    end
+
+    local now = os.clock()
+    if now - (UI.flingVoid.hitCooldown[player] or 0) < 1.5 then
+        return
+    end
+    UI.flingVoid.hitCooldown[player] = now
+    UI.flingVoid.flingPlayer(player)
+end
+
+function UI.flingVoid.wireCharacter(character)
+    for _, descendant in ipairs(character:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            table.insert(UI.flingVoid.connections, descendant.Touched:Connect(UI.flingVoid.onTouched))
+        end
+    end
+    table.insert(UI.flingVoid.connections, character.DescendantAdded:Connect(function(descendant)
+        if descendant:IsA("BasePart") then
+            table.insert(UI.flingVoid.connections, descendant.Touched:Connect(UI.flingVoid.onTouched))
+        end
+    end))
+end
+
+function UI.flingVoid.toggle(state)
+    UI.flingVoid.enabled = state == true
+    UI.flingVoid.token = UI.flingVoid.token + 1
+    UI.flingVoid.disconnectTouches()
+    table.clear(UI.flingVoid.hitCooldown)
+
+    if not UI.flingVoid.enabled then
+        return
+    end
+
+    if LocalPlayer.Character then
+        UI.flingVoid.wireCharacter(LocalPlayer.Character)
+    end
+end
+
+table.insert(connections, LocalPlayer.CharacterAdded:Connect(function(character)
+    if UI.flingVoid.enabled then
+        UI.flingVoid.disconnectTouches()
+        UI.flingVoid.wireCharacter(character)
+    end
+end))
 
 -- ===== NOCLIP =====
 local function toggleNoclip(state, silent)
@@ -2842,6 +3173,9 @@ local function stopSpectating()
     end
 
     spectateTarget = nil
+    if UI.clickSpectate.setButtonVisible then
+        UI.clickSpectate.setButtonVisible(false)
+    end
 
     local character = LocalPlayer.Character
     if character then
@@ -2907,7 +3241,118 @@ local function startSpectating(playerName)
     end)
 
     createNotification("Spectate", "Viewing "..target.Name)
+    UI.clickSpectate.setButtonVisible(true)
 end
+
+function UI.clickSpectate.createButton()
+    if UI.clickSpectate.button and UI.clickSpectate.button.Parent then
+        return
+    end
+
+    local button = Instance.new("TextButton")
+    button.Name = "StopSpectatingButton"
+    button.AnchorPoint = Vector2.new(1, 1)
+    button.Position = UDim2.new(1, -20, 1, -24)
+    button.Size = UDim2.fromOffset(156, 42)
+    button.BackgroundColor3 = Color3.fromRGB(218, 82, 138)
+    button.BorderSizePixel = 0
+    button.AutoButtonColor = false
+    button.Font = Enum.Font.GothamSemibold
+    button.Text = "Stop Spectating"
+    button.TextColor3 = Color3.fromRGB(255, 242, 248)
+    button.TextSize = 12
+    button.Visible = false
+    button.ZIndex = 50
+    button.Parent = Window.gui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = button
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(255, 163, 201)
+    stroke.Transparency = 0.25
+    stroke.Thickness = 1
+    stroke.Parent = button
+
+    UI.clickSpectate.button = button
+    UI.clickSpectate.buttonConnection = button.Activated:Connect(stopSpectating)
+end
+
+function UI.clickSpectate.setButtonVisible(state)
+    if state and (not UI.clickSpectate.button or not UI.clickSpectate.button.Parent) then
+        UI.clickSpectate.createButton()
+    end
+    if UI.clickSpectate.button then
+        UI.clickSpectate.button.Visible = state == true
+    end
+end
+
+function UI.clickSpectate.destroyButton()
+    if UI.clickSpectate.buttonConnection then
+        UI.clickSpectate.buttonConnection:Disconnect()
+        UI.clickSpectate.buttonConnection = nil
+    end
+    if UI.clickSpectate.button then
+        UI.clickSpectate.button:Destroy()
+        UI.clickSpectate.button = nil
+    end
+end
+
+function UI.clickSpectate.toggle(state)
+    UI.clickSpectate.enabled = state == true
+    if UI.clickSpectate.connection then
+        UI.clickSpectate.connection:Disconnect()
+        UI.clickSpectate.connection = nil
+    end
+    if not UI.clickSpectate.enabled then
+        return
+    end
+
+    UI.clickSpectate.connection = UserInputService.InputBegan:Connect(function(input, gameProcessed)
+        if gameProcessed
+            or input.UserInputType ~= Enum.UserInputType.MouseButton1
+            or UserInputService:GetFocusedTextBox()
+        then
+            return
+        end
+
+        if UI.clickSpectate.button and UI.clickSpectate.button.Visible then
+            local position = input.Position
+            local buttonPosition = UI.clickSpectate.button.AbsolutePosition
+            local buttonSize = UI.clickSpectate.button.AbsoluteSize
+            if position.X >= buttonPosition.X
+                and position.X <= buttonPosition.X + buttonSize.X
+                and position.Y >= buttonPosition.Y
+                and position.Y <= buttonPosition.Y + buttonSize.Y
+            then
+                return
+            end
+        end
+
+        local instance = LocalPlayer:GetMouse().Target
+        local player
+        while instance and instance ~= workspace do
+            if instance:IsA("Model") then
+                player = Players:GetPlayerFromCharacter(instance)
+                if player then
+                    break
+                end
+            end
+            instance = instance.Parent
+        end
+
+        if player and player ~= LocalPlayer then
+            startSpectating(player.Name)
+        end
+    end)
+end
+
+table.insert(connections, Players.PlayerRemoving:Connect(function(player)
+    if player == spectateTarget then
+        stopSpectating()
+    end
+end))
 
 -- ===== TELEPORT TO PLAYER =====
 local function teleportToPlayer(playerName)
@@ -3003,6 +3448,7 @@ local function rejoinServer()
         return
     end
     rejoinCooldown = true
+    gakuranImpact.Stop()
     stopFlingLoop()
     stopFlingMonitor()
     restoreGhostedParts()
@@ -4100,20 +4546,23 @@ local function collectSettings()
         infStaminaEnabled = infStaminaEnabled,
         noDodgeCooldownEnabled = noDodgeCooldownEnabled,
         antiStunEnabled = antiStunEnabled,
+        noBlurEnabled = UI.noBlur.enabled,
+        chatLoggerEnabled = UI.chatLogger.enabled,
+        autoChessEnabled = UI.autoChess.enabled,
         espEnabled = espEnabled,
         espDistance = espDistance,
         hpM2CooldownEnabled = UI.hpM2Cooldown.enabled,
         infCamZoomEnabled = UI.infCamZoom.enabled,
         jetpackEnabled = jetpack.enabled,
+        flingVoidEnabled = UI.flingVoid.enabled,
+        clickSpectateEnabled = UI.clickSpectate.enabled,
         autoGreenEnabled = UI.autoGreen.enabled,
         autoPianoEnabled = UI.autoPiano.enabled,
         pianoSong = UI.autoPiano.selectedSong,
         returnByDeathEnabled = returnByDeath.enabled,
         rhythmAutoPerfectEnabled = rhythmAutoPerfect.enabled,
         healthBarsVisible = healthBarsVisible,
-        flingActive = flingActive,
-        flingPower = flingPower,
-        selectedFlingDuration = selectedFling.duration,
+        trampolineActive = flingActive,
         namesVisible = namesVisible,
         antiFlingEnabled = antiFlingEnabled,
         antiVoidEnabled = antiVoidEnabled,
@@ -4226,11 +4675,16 @@ local function applySettings(settings)
     setToggleIfChanged(UI.infStaminaToggle, settings.infStaminaEnabled == true)
     setToggleIfChanged(UI.noDodgeCooldownToggle, settings.noDodgeCooldownEnabled == true)
     setToggleIfChanged(UI.antiStunToggle, settings.antiStunEnabled == true)
+    setToggleIfChanged(UI.noBlurToggle, settings.noBlurEnabled == true)
+    setToggleIfChanged(UI.chatLoggerToggle, settings.chatLoggerEnabled == true)
+    setToggleIfChanged(UI.autoChessToggle, settings.autoChessEnabled == true)
     setToggleIfChanged(UI.espToggle, settings.espEnabled == true)
     setToggleIfChanged(UI.espDistanceSlider, settings.espDistance or espDistance)
     setToggleIfChanged(UI.hpM2CooldownToggle, settings.hpM2CooldownEnabled == true)
     setToggleIfChanged(UI.infCamZoomToggle, settings.infCamZoomEnabled == true)
     setToggleIfChanged(UI.jetpackToggle, settings.jetpackEnabled == true)
+    setToggleIfChanged(UI.flingVoidToggle, settings.flingVoidEnabled == true)
+    setToggleIfChanged(UI.clickSpectateToggle, settings.clickSpectateEnabled == true)
     setToggleIfChanged(UI.autoGreenToggle, settings.autoGreenEnabled == true)
     setToggleIfChanged(UI.autoPianoToggle, settings.autoPianoEnabled == true)
     if type(settings.pianoSong) == "string" and UI.autoPiano.songs[settings.pianoSong] then
@@ -4242,9 +4696,7 @@ local function applySettings(settings)
     setToggleIfChanged(UI.returnByDeathToggle, settings.returnByDeathEnabled == true)
     setToggleIfChanged(UI.rhythmAutoPerfectToggle, settings.rhythmAutoPerfectEnabled == true)
     setToggleIfChanged(UI.healthBarsToggle, settings.healthBarsVisible == true)
-    setToggleIfChanged(UI.flingToggleRef, settings.flingActive == true)
-    setToggleIfChanged(UI.flingPowerSlider, settings.flingPower or flingPower)
-    setToggleIfChanged(UI.flingDurationSlider, settings.selectedFlingDuration or selectedFling.duration)
+    setToggleIfChanged(UI.trampolineToggleRef, settings.trampolineActive == true)
     setToggleIfChanged(UI.showUsernamesToggle, settings.namesVisible == true)
     setToggleIfChanged(UI.antiFlingToggle, settings.antiFlingEnabled == true)
     setToggleIfChanged(UI.antiVoidToggle, settings.antiVoidEnabled == true)
@@ -4615,6 +5067,408 @@ local function toggleAntiStun(state)
     end)
 end
 
+-- ===== NO BLUR =====
+function UI.noBlur.suppress(root)
+    if not root then return end
+
+    for _, effect in ipairs(root:GetDescendants()) do
+        if effect:IsA("BlurEffect") or effect:IsA("DepthOfFieldEffect") then
+            if UI.noBlur.states[effect] == nil or effect.Enabled then
+                UI.noBlur.states[effect] = effect.Enabled
+            end
+            effect.Enabled = false
+        end
+    end
+end
+
+function UI.noBlur.step()
+    UI.noBlur.suppress(game:GetService("Lighting"))
+    UI.noBlur.suppress(workspace.CurrentCamera)
+end
+
+function UI.noBlur.toggle(state)
+    UI.noBlur.enabled = state == true
+
+    if UI.noBlur.connection then
+        UI.noBlur.connection:Disconnect()
+        UI.noBlur.connection = nil
+    end
+
+    if not UI.noBlur.enabled then
+        for effect, enabled in pairs(UI.noBlur.states) do
+            if effect.Parent then
+                effect.Enabled = enabled
+            end
+        end
+        table.clear(UI.noBlur.states)
+        return
+    end
+
+    UI.noBlur.step()
+    UI.noBlur.connection = RunService.RenderStepped:Connect(UI.noBlur.step)
+end
+
+-- ===== CHAT LOGGER =====
+function UI.chatLogger.disconnect()
+    for _, connection in ipairs(UI.chatLogger.connections) do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+    table.clear(UI.chatLogger.connections)
+end
+
+function UI.chatLogger.destroyGui()
+    if UI.chatLogger.gui then
+        UI.chatLogger.gui:Destroy()
+        UI.chatLogger.gui = nil
+        UI.chatLogger.body = nil
+    end
+end
+
+function UI.chatLogger.createGui()
+    UI.chatLogger.destroyGui()
+
+    local panel = Instance.new("Frame")
+    panel.Name = "MariChatLogger"
+    panel.AnchorPoint = Vector2.new(1, 0)
+    panel.Position = UDim2.new(1, -20, 0, 20)
+    panel.Size = UDim2.fromOffset(380, 260)
+    panel.BackgroundColor3 = Color3.fromRGB(7, 7, 9)
+    panel.BackgroundTransparency = 0.04
+    panel.BorderSizePixel = 0
+    panel.ZIndex = 60
+    panel.Parent = Window.gui
+
+    local panelCorner = Instance.new("UICorner")
+    panelCorner.CornerRadius = UDim.new(0, 9)
+    panelCorner.Parent = panel
+
+    local panelStroke = Instance.new("UIStroke")
+    panelStroke.Color = Color3.fromRGB(48, 48, 56)
+    panelStroke.Thickness = 1
+    panelStroke.Parent = panel
+
+    local header = Instance.new("Frame")
+    header.Name = "Header"
+    header.Size = UDim2.new(1, 0, 0, 36)
+    header.BackgroundColor3 = Color3.fromRGB(12, 12, 15)
+    header.BorderSizePixel = 0
+    header.Active = true
+    header.ZIndex = 61
+    header.Parent = panel
+
+    local headerCorner = Instance.new("UICorner")
+    headerCorner.CornerRadius = UDim.new(0, 9)
+    headerCorner.Parent = header
+
+    local headerCover = Instance.new("Frame")
+    headerCover.Position = UDim2.new(0, 0, 1, -9)
+    headerCover.Size = UDim2.new(1, 0, 0, 9)
+    headerCover.BackgroundColor3 = header.BackgroundColor3
+    headerCover.BorderSizePixel = 0
+    headerCover.ZIndex = 61
+    headerCover.Parent = header
+
+    local body = Instance.new("ScrollingFrame")
+    body.Name = "Messages"
+    body.Position = UDim2.fromOffset(0, 36)
+    body.Size = UDim2.new(1, 0, 1, -36)
+    body.BackgroundTransparency = 1
+    body.BorderSizePixel = 0
+    body.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    body.CanvasSize = UDim2.new()
+    body.ScrollBarImageColor3 = Color3.fromRGB(105, 105, 116)
+    body.ScrollBarThickness = 3
+    body.ZIndex = 61
+    body.Parent = panel
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingTop = UDim.new(0, 8)
+    padding.PaddingBottom = UDim.new(0, 8)
+    padding.PaddingLeft = UDim.new(0, 10)
+    padding.PaddingRight = UDim.new(0, 10)
+    padding.Parent = body
+
+    local layout = Instance.new("UIListLayout")
+    layout.Padding = UDim.new(0, 5)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Parent = body
+
+    local dragging = false
+    local dragStart
+    local startPosition
+    table.insert(UI.chatLogger.connections, header.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch
+        then
+            dragging = true
+            dragStart = input.Position
+            startPosition = panel.Position
+        end
+    end))
+    table.insert(UI.chatLogger.connections, UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch)
+        then
+            local delta = input.Position - dragStart
+            panel.Position = startPosition + UDim2.fromOffset(delta.X, delta.Y)
+        end
+    end))
+    table.insert(UI.chatLogger.connections, UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch
+        then
+            dragging = false
+        end
+    end))
+
+    UI.chatLogger.gui = panel
+    UI.chatLogger.body = body
+end
+
+function UI.chatLogger.append(speaker, message)
+    local body = UI.chatLogger.body
+    if not UI.chatLogger.enabled or not body or not body.Parent then
+        return
+    end
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Message"
+    label.Size = UDim2.new(1, -4, 0, 18)
+    label.AutomaticSize = Enum.AutomaticSize.Y
+    label.BackgroundTransparency = 1
+    label.Font = Enum.Font.Gotham
+    label.Text = string.format("%s: %s", tostring(speaker), tostring(message))
+    label.TextColor3 = Color3.fromRGB(216, 216, 222)
+    label.TextSize = 11
+    label.TextWrapped = true
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextYAlignment = Enum.TextYAlignment.Top
+    label.ZIndex = 62
+    label.Parent = body
+
+    task.defer(function()
+        if body.Parent then
+            body.CanvasPosition = Vector2.new(0, math.max(0, body.AbsoluteCanvasSize.Y))
+        end
+    end)
+end
+
+function UI.chatLogger.wireLegacyPlayer(player)
+    table.insert(UI.chatLogger.connections, player.Chatted:Connect(function(message)
+        UI.chatLogger.append(player.Name, message)
+    end))
+end
+
+function UI.chatLogger.toggle(state)
+    UI.chatLogger.disconnect()
+    UI.chatLogger.destroyGui()
+    UI.chatLogger.enabled = state == true
+    if not UI.chatLogger.enabled then
+        return
+    end
+
+    UI.chatLogger.createGui()
+    local textChatService = game:GetService("TextChatService")
+    if textChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+        table.insert(UI.chatLogger.connections, textChatService.MessageReceived:Connect(function(message)
+            local source = message.TextSource
+            if not source then return end
+            local player = Players:GetPlayerByUserId(source.UserId)
+            UI.chatLogger.append(player and player.Name or source.Name, message.Text)
+        end))
+        return
+    end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        UI.chatLogger.wireLegacyPlayer(player)
+    end
+    table.insert(UI.chatLogger.connections, Players.PlayerAdded:Connect(UI.chatLogger.wireLegacyPlayer))
+end
+
+-- ===== AUTO CHESS =====
+function UI.autoChess.findContext()
+    if UI.autoChess.context
+        and type(UI.autoChess.state) == "table"
+        and rawget(UI.autoChess.context, "Chess") == UI.autoChess.state
+    then
+        return UI.autoChess.context, UI.autoChess.state
+    end
+
+    if typeof(getgc) ~= "function" then
+        return nil, nil
+    end
+    for _, candidate in ipairs(getgc(true)) do
+        if type(candidate) == "table" then
+            local chessState = rawget(candidate, "Chess")
+            if type(chessState) == "table"
+                and type(rawget(chessState, "handle")) == "function"
+                and typeof(candidate.Invoke) == "function"
+            then
+                UI.autoChess.context = candidate
+                UI.autoChess.state = chessState
+                return candidate, chessState
+            end
+        end
+    end
+    return nil, nil
+end
+
+function UI.autoChess.search(state, depth, alpha, beta, ply)
+    UI.autoChess.nodes = UI.autoChess.nodes + 1
+    if UI.autoChess.nodes % 96 == 0 then
+        task.wait()
+    end
+
+    local legalMoves = UI.autoChess.moves.legal(state)
+    if #legalMoves == 0 then
+        if UI.autoChess.moves.inCheck(state, state.side) then
+            if state.side == "w" then
+                return -100000 + ply
+            end
+            return 100000 - ply
+        end
+        return 0
+    end
+    if depth <= 0 then
+        return UI.autoChess.eval.score(state)
+    end
+
+    if state.side == "w" then
+        local best = -math.huge
+        for _, move in ipairs(legalMoves) do
+            local _, undo = UI.autoChess.moves.make(state, move)
+            local score = UI.autoChess.search(state, depth - 1, alpha, beta, ply + 1)
+            UI.autoChess.moves.unmake(state, move, undo)
+            best = math.max(best, score)
+            alpha = math.max(alpha, score)
+            if alpha >= beta then break end
+        end
+        return best
+    end
+
+    local best = math.huge
+    for _, move in ipairs(legalMoves) do
+        local _, undo = UI.autoChess.moves.make(state, move)
+        local score = UI.autoChess.search(state, depth - 1, alpha, beta, ply + 1)
+        UI.autoChess.moves.unmake(state, move, undo)
+        best = math.min(best, score)
+        beta = math.min(beta, score)
+        if alpha >= beta then break end
+    end
+    return best
+end
+
+function UI.autoChess.chooseMove(state)
+    UI.autoChess.nodes = 0
+    local legalMoves = UI.autoChess.moves.legal(state)
+    local bestMove
+    local bestScore = state.side == "w" and -math.huge or math.huge
+
+    for _, move in ipairs(legalMoves) do
+        local _, undo = UI.autoChess.moves.make(state, move)
+        local score = UI.autoChess.search(state, 2, -math.huge, math.huge, 1)
+        UI.autoChess.moves.unmake(state, move, undo)
+
+        if not bestMove
+            or state.side == "w" and score > bestScore
+            or state.side == "b" and score < bestScore
+        then
+            bestMove = move
+            bestScore = score
+        end
+    end
+    return bestMove
+end
+
+function UI.autoChess.step()
+    if not UI.autoChess.enabled or UI.autoChess.searching or os.clock() < UI.autoChess.nextScan then
+        return
+    end
+    UI.autoChess.nextScan = os.clock() + 0.2
+
+    local context, chessState = UI.autoChess.findContext()
+    local mirror = chessState and chessState.mirror
+    if not context or not chessState.active or not chessState.seated or not mirror then
+        UI.autoChess.lastFen = nil
+        return
+    end
+
+    local turnColor = mirror:turn() == "white" and "w" or "b"
+    if not chessState.solo and turnColor ~= chessState.myColor then
+        return
+    end
+
+    local fen = mirror:fen()
+    if UI.autoChess.lastFen == fen then
+        return
+    end
+    UI.autoChess.lastFen = fen
+    UI.autoChess.searching = true
+
+    task.spawn(function()
+        local searchEngine = mirror:clone()
+        local success, move = pcall(UI.autoChess.chooseMove, searchEngine.state)
+        if success
+            and move
+            and UI.autoChess.enabled
+            and chessState.active
+            and chessState.mirror
+            and chessState.mirror:fen() == fen
+        then
+            success = pcall(function()
+                context:Invoke("Chess_Move", {
+                    tableId = chessState.tableId,
+                    from = move.from,
+                    to = move.to,
+                    promo = move.promo and move.promo:lower() or nil,
+                })
+            end)
+        end
+        if not success then
+            UI.autoChess.lastFen = nil
+        end
+        UI.autoChess.searching = false
+    end)
+end
+
+function UI.autoChess.toggle(state)
+    UI.autoChess.enabled = state == true
+    UI.autoChess.searching = false
+    UI.autoChess.lastFen = nil
+    UI.autoChess.nextScan = 0
+    UI.autoChess.context = nil
+    UI.autoChess.state = nil
+
+    if UI.autoChess.connection then
+        UI.autoChess.connection:Disconnect()
+        UI.autoChess.connection = nil
+    end
+    if not UI.autoChess.enabled then
+        return
+    end
+
+    local success, moves, evaluation = pcall(function()
+        local chess = ReplicatedStorage.Shared.Chess
+        return require(chess.Moves), require(chess.Eval)
+    end)
+    if not success then
+        UI.autoChess.enabled = false
+        createNotification("Auto Chess", "Chess engine modules are unavailable.")
+        task.defer(function()
+            if UI.autoChessToggle then
+                UI.autoChessToggle:Set(false)
+            end
+        end)
+        return
+    end
+
+    UI.autoChess.moves = moves
+    UI.autoChess.eval = evaluation
+    UI.autoChess.connection = RunService.Heartbeat:Connect(UI.autoChess.step)
+end
+
 -- Combat Tab
 UI.combatTab = Window:CreateTab("Combat", 4483362458)
 UI.autoParryToggle = createToggleWithKeybind(UI.combatTab, {
@@ -4668,6 +5522,14 @@ UI.noDodgeCooldownToggle = UI.combatTab:CreateToggle({
     end
 })
 
+UI.noBlurToggle = UI.combatTab:CreateToggle({
+    Name = "No Blur",
+    CurrentValue = false,
+    Callback = function(v)
+        UI.noBlur.toggle(v)
+    end,
+})
+
 UI.antiStunToggle = UI.combatTab:CreateToggle({
     Name = "Anti Stun",
     CurrentValue = false,
@@ -4714,126 +5576,75 @@ UI.healthBarsToggle = UI.combatTab:CreateToggle({
 -- ===== FLING TAB =====
 UI.flingTab = Window:CreateTab("Fling", 4483362458)
 
--- Toggle
-UI.flingToggleRef = createToggleWithKeybind(UI.flingTab, {
-    Name = "Enable Fling",
+UI.flingVoidToggle = createToggleWithKeybind(UI.flingTab, {
+    Name = "Voidfling",
     CurrentValue = false,
-    Callback = function(v)
-        if v ~= flingActive then
-            toggleFling(v)
-        end
-    end
-})
-
--- Power Slider
-UI.flingPowerSlider = UI.flingTab:CreateSlider({
-    Name = "Fling Power",
-    Range = {0, 100},
-    Increment = 1,
-    CurrentValue = 50,
-    Callback = function(v)
-        flingPower = v
-    end
-})
-
--- Selected Target Status
-UI.targetStatusLabel = UI.flingTab:CreateLabel("Selected Target: None")
-updateTargetStatusLabel()
-
--- Target Dropdown
-UI.targetDropdown = UI.flingTab:CreateDropdown({
-    Name = "Target Player",
-    Options = {},
-    CurrentOption = "",
-    Callback = function(option)
-
-        if updatingDropdown then
-            return
-        end
-
-        local selected = option
-
-        if typeof(option) == "table" then
-            selected = option[1] or option.Name
-        elseif typeof(option) == "Instance" and option:IsA("Player") then
-            selected = option.Name
-        end
-
-        -- Ignore programmatic clears
-        if selected == nil or selected == "" then
-            return
-        end
-
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p.Name == selected then
-                targetPlayer = p
-                updateTargetStatusLabel()
-                createNotification("Target Selected", p.Name)
-                break
-            end
-        end
-    end
-})
-
--- SAFE refresh function with pcall
-local function refreshPlayerDropdown()
-    if not UI.targetDropdown then return end
-    local playerNames = {}
-    for _, p in pairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer then
-            table.insert(playerNames, p.Name)
-        end
-    end
-    -- Use pcall to catch any errors from Refresh
-    local success, err = pcall(function()
-        UI.targetDropdown:Refresh(playerNames, true)
-    end)
-    if not success then
-        warn("Failed to refresh dropdown: " .. tostring(err))
-    end
-end
-
--- Initial refresh with a small delay
-task.delay(0.1, refreshPlayerDropdown)
-
--- Refresh when players join/leave
-table.insert(connections, Players.PlayerAdded:Connect(refreshPlayerDropdown))
-table.insert(connections, Players.PlayerRemoving:Connect(refreshPlayerDropdown))
-
-table.insert(connections, Players.PlayerRemoving:Connect(function(plr)
-    if plr == targetPlayer then
-        if selectedFling.running then
-            selectedFling.stop(true)
-        end
-        targetPlayer = nil
-        updateTargetStatusLabel()
-
-        if UI.targetDropdown then
-            updatingDropdown = true
-            UI.targetDropdown:Set("")
-            task.defer(function()
-                updatingDropdown = false
-            end)
-        end
-
-        createNotification("Target", "Target left the game.")
-    end
-end))
-
-UI.flingDurationSlider = UI.flingTab:CreateSlider({
-    Name = "Fling Duration",
-    Range = {0.25, 15},
-    Increment = 0.25,
-    CurrentValue = 1,
     Callback = function(value)
-        selectedFling.duration = value
+        UI.flingVoid.toggle(value)
+        playSound()
+        createNotification("Voidfling", value and "Enabled" or "Disabled")
     end,
 })
 
-UI.flingTab:CreateButton({
-    Name = "Fling Selected",
+UI.impactStatusLabel = UI.flingTab:CreateLabel("Target mode: None")
+
+UI.impactTargetInput = UI.flingTab:CreateInput({
+    Name = "Target Mode Fling",
+    PlaceholderText = "Player name (blank = nearest)",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(text)
+        impactTargetText = text
+        if text:gsub("%s+", "") == "" then
+            impactTargetPlayer = nil
+            updateImpactTargetStatus()
+            return
+        end
+        impactTargetPlayer = resolveImpactTarget(text)
+        if not impactTargetPlayer then
+            clearImpactTarget()
+            createNotification("Error", "Player does not exist.")
+            return
+        end
+        updateImpactTargetStatus()
+    end,
+})
+
+local impactFlingButton = UI.flingTab:CreateButton({
+    Name = "Fling",
     Callback = function()
-        selectedFling.start()
+        gakuranImpact.Fling(impactTargetText)
+    end,
+})
+
+local impactKeybindName = "Target Mode Fling Keybind"
+UI.impactFlingKeybind = UI.flingTab:CreateKeybind({
+    Name = impactKeybindName,
+    CurrentKeybind = "X",
+    InlineParent = impactFlingButton.Instance,
+    InlinePosition = UDim2.new(1, -110, 0.5, 0),
+    Callback = function(key)
+        local entry = keybindRegistry[impactKeybindName]
+        if entry then
+            entry.key = tostring(key)
+        end
+    end,
+})
+keybindRegistry[impactKeybindName] = {
+    keybind = UI.impactFlingKeybind,
+    key = "X",
+    action = function()
+        if impactState.running then
+            gakuranImpact.Stop()
+        else
+            gakuranImpact.Fling(impactTargetText)
+        end
+    end,
+}
+
+UI.flingTab:CreateButton({
+    Name = "Stop Fling",
+    Callback = function()
+        gakuranImpact.Stop()
     end,
 })
 
@@ -4875,6 +5686,9 @@ autoFaceEnabled = false
 stopInfStamina()
 stopNoDodgeCooldown()
 stopAntiStun()
+UI.noBlur.toggle(false)
+UI.chatLogger.toggle(false)
+UI.autoChess.toggle(false)
 _G.__mariHubNoDodgeCooldownCleanup = nil
 namesVisible = false
 nameTagsActive = false
@@ -4884,6 +5698,8 @@ espEnabled = false
 clearESP()
 UI.hpM2Cooldown.toggle(false)
 jetpack.toggle(false)
+UI.flingVoid.toggle(false)
+UI.clickSpectate.toggle(false)
 UI.autoGreen.toggle(false)
 UI.autoPiano.toggle(false)
 returnByDeath.toggle(false)
@@ -4914,6 +5730,7 @@ end
 
         --stop spectating 
         stopSpectating()
+        UI.clickSpectate.destroyButton()
 
          --stop flying
          if flying then
@@ -4924,6 +5741,7 @@ end
          UI.walkSpeed.setEnabled(false)
 
          -- Stop fling
+        gakuranImpact.Destroy()
         stopFlingLoop()
         stopFlingMonitor()
         restoreGhostedParts()
@@ -5170,6 +5988,14 @@ UI.playersTab:CreateButton({
     end
 })
 
+UI.clickSpectateToggle = UI.playersTab:CreateToggle({
+    Name = "Click to Spectate",
+    CurrentValue = false,
+    Callback = function(value)
+        UI.clickSpectate.toggle(value)
+    end,
+})
+
 UI.playersTab:CreateInput({
     Name = "Teleport To Player",
     PlaceholderText = "Username...",
@@ -5214,6 +6040,32 @@ UI.selfTab:CreateButton({
 
 -- ===== FUN TAB =====
 UI.funTab = Window:CreateTab("Fun", 4483362458)
+
+UI.trampolineToggleRef = UI.funTab:CreateToggle({
+    Name = "Trampoline",
+    CurrentValue = false,
+    Callback = function(v)
+        if v ~= flingActive then
+            toggleFling(v)
+        end
+    end,
+})
+
+UI.chatLoggerToggle = UI.funTab:CreateToggle({
+    Name = "Chat Logger",
+    CurrentValue = false,
+    Callback = function(value)
+        UI.chatLogger.toggle(value)
+    end,
+})
+
+UI.autoChessToggle = UI.funTab:CreateToggle({
+    Name = "Auto Chess",
+    CurrentValue = false,
+    Callback = function(value)
+        UI.autoChess.toggle(value)
+    end,
+})
 
 function UI.infCamZoom.readUpvalueOfType(callback, index, expectedType)
     local getUpvalue = debug and debug.getupvalue or getupvalue
